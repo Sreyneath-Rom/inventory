@@ -13,7 +13,7 @@ export function StatCard({ tone, icon, label, value, footer }: {
   return (
     <GlassCard className="p-4">
       <div className="flex items-center gap-4">
-        <span className={`grid h-16 w-16 shrink-0 place-items-center rounded-2xl bg-gradient-to-br text-white shadow-lg ${TONES[tone]}`}>{icon}</span>
+        <span className={`grid h-16 w-16 shrink-0 place-items-center rounded-2xl bg-linear-to-br text-white shadow-lg ${TONES[tone]}`}>{icon}</span>
         <div>
           <p className="text-sm text-slate-500">{label}</p>
           <p className="text-3xl font-bold">{value}</p>

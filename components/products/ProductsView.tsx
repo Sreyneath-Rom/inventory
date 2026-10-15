@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { Guard } from "@/components/ui/Guard";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { Modal } from "@/components/ui/Modal";
 import { Badge } from "@/components/ui/Badge";
+import { ProductAvatar } from "@/components/ui/ProductAvatar";
 import { useToast } from "@/components/ui/Toast";
 import { useStore } from "@/lib/store";
 import type { Product } from "@/lib/types";
@@ -23,7 +24,7 @@ const blank = {
   price: "",
   stock: "0",
   threshold: "10",
-  emoji: "📦",
+  image: "",
 };
 
 export function ProductsView() {
@@ -93,14 +94,15 @@ export function ProductsView() {
       price: String(p.price),
       stock: String(p.stock),
       threshold: String(p.threshold),
-      emoji: p.emoji,
+      image: p.image ?? "",
     });
     setOpen(true);
   };
 
   const save = () => {
     if (!f.name.trim() || !f.sku.trim()) return setErr("Name and SKU are required.");
-    if (!f.categoryId) return setErr("Please choose a category (create one first if none exist).");
+    if (!f.categoryId)
+      return setErr("Please choose a category (create one first if none exist).");
     const data = {
       name: f.name.trim(),
       sku: f.sku.trim(),
@@ -110,7 +112,7 @@ export function ProductsView() {
       price: +f.price || 0,
       stock: Math.max(0, Math.floor(+f.stock || 0)),
       threshold: Math.max(0, Math.floor(+f.threshold || 0)),
-      emoji: f.emoji || "📦",
+      image: f.image.trim(),
     };
     if (editing) {
       updateProduct({ ...editing, ...data, stock: editing.stock });
@@ -163,7 +165,7 @@ export function ProductsView() {
         </div>
 
         <div className="neu-inset overflow-x-auto rounded-2xl">
-          <table className="tbl min-w-[760px]">
+          <table className="tbl min-w-190">
             <thead>
               <tr>
                 <th>Product</th>
@@ -183,8 +185,10 @@ export function ProductsView() {
                 return (
                   <tr key={p.id}>
                     <td>
-                      <span className="mr-2 text-lg">{p.emoji}</span>
-                      <b>{p.name}</b>
+                      <div className="flex items-center gap-3">
+                        <ProductAvatar product={p} size={32} />
+                        <b>{p.name}</b>
+                      </div>
                     </td>
                     <td className="text-slate-500">{p.sku}</td>
                     <td>
@@ -292,11 +296,35 @@ export function ProductsView() {
           <Field label="Unit">
             <input className="field" value={f.unit} onChange={set("unit")} placeholder="pcs, kg, btl…" />
           </Field>
-          <Field label="Emoji icon">
-            <input className="field" value={f.emoji} onChange={set("emoji")} maxLength={2} />
-          </Field>
+
+          <div className="sm:col-span-2">
+            <Field label="Image URL" hint="Optional. When empty, a placeholder icon is shown.">
+              <div className="flex items-center gap-3">
+                <input
+                  className="field flex-1"
+                  value={f.image}
+                  onChange={set("image")}
+                  placeholder="https://…"
+                />
+                {f.image && (
+                  <button
+                    type="button"
+                    onClick={() => setF({ ...f, image: "" })}
+                    aria-label="Clear image"
+                    className="neu-sm grid h-9 w-9 place-items-center rounded-xl"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+                <ProductAvatar product={{ image: f.image, name: f.name || "Preview" }} size={40} />
+              </div>
+            </Field>
+          </div>
         </div>
-        {err && <p className="mt-4 rounded-xl bg-red-100/80 px-3 py-2 text-sm text-red-600">{err}</p>}
+
+        {err && (
+          <p className="mt-4 rounded-xl bg-red-100/80 px-3 py-2 text-sm text-red-600">{err}</p>
+        )}
         <div className="mt-6 flex justify-end gap-2">
           <Button variant="ghost" onClick={() => setOpen(false)}>
             Cancel

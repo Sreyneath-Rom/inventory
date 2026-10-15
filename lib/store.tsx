@@ -1,5 +1,12 @@
 "use client";
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import type {
   AppUser,
   Category,
@@ -28,6 +35,7 @@ export interface MoveInput {
   date?: string;
 }
 
+/** Public shape of the store — `db` is always present once mounted. */
 interface Store {
   db: DB;
   can: (f: Feature) => boolean;
@@ -52,25 +60,55 @@ interface Store {
   resetData: () => void;
 }
 
-const Ctx = createContext<Store | null>(null);
+/** What the context actually holds — `db` may be null during hydration. */
+type StoreMaybe = Omit<Store, "db"> & { db: DB | null };
 
-export const useStore = () => {
+const Ctx = createContext<StoreMaybe | null>(null);
+
+/**
+ * Typed accessor used by all app components. Guarantees a non-null DB,
+ * which in practice means: only call this from inside `<RequireDb>`.
+ */
+export function useStore(): Store {
+  const c = useContext(Ctx);
+  if (!c) throw new Error("useStore must be used inside <StoreProvider>");
+  if (!c.db) throw new Error("DB not ready — wrap this subtree in <RequireDb>.");
+  return c as Store;
+}
+
+/** Raw accessor used only by `RequireDb` — allows db to be null. */
+function useStoreMaybe(): StoreMaybe {
   const c = useContext(Ctx);
   if (!c) throw new Error("useStore must be used inside <StoreProvider>");
   return c;
-};
+}
+
+/**
+ * Renders `children` once the DB has hydrated. Shows a loading state
+ * until then. Every component below this gate is guaranteed a non-null DB.
+ */
+export function RequireDb({ children }: { children: React.ReactNode }) {
+  const { db } = useStoreMaybe();
+  if (!db) {
+    return (
+      <div className="grid min-h-screen place-items-center text-slate-500">
+        Loading…
+      </div>
+    );
+  }
+  return <>{children}</>;
+}
 
 export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [db, setDbState] = useState<DB | null>(null);
   const ref = useRef<DB | null>(null);
 
-  /* ─── Hydration ────────────────────────────────────────────────────── */
+  /* ─── Hydration ────────────────────────────────────────────────── */
 
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
-      // 1. Try the API first (server is source of truth).
       const res = await api.loadDb();
       if (cancelled) return;
 
@@ -79,7 +117,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       if (res.ok) {
         initial = res.data;
       } else {
-        // 2. Fall back to localStorage so the app still boots offline.
+        // Fall back to localStorage so the app still boots offline.
         let cached: DB | null = null;
         try {
           const raw = localStorage.getItem(KEY);
@@ -89,7 +127,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         }
         initial = cached ?? buildSeed();
 
-        // 3. Push whatever we have back to the server so the next load is clean.
+        // Push whatever we have back to the server.
         void api.replaceDb(initial);
       }
 
@@ -102,7 +140,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  /* ─── Persistence safety net ───────────────────────────────────────── */
+  /* ─── Persistence safety net ───────────────────────────────────── */
 
   useEffect(() => {
     if (db) {
@@ -114,7 +152,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }
   }, [db]);
 
-  /* ─── State helpers ────────────────────────────────────────────────── */
+  /* ─── State helpers ────────────────────────────────────────────── */
 
   const commit = useCallback((next: DB) => {
     ref.current = next;
@@ -129,27 +167,23 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     [commit]
   );
 
-  /** Pull authoritative state from the server. Used to roll back failed optimistic writes. */
+  /** Refetch from the server. Used to roll back failed optimistic writes. */
   const resync = useCallback(async () => {
     const res = await api.loadDb();
     if (res.ok) commit(res.data);
   }, [commit]);
 
-  /* ─── Don't render until we have state ─────────────────────────────── */
+  /* ─── Store value ──────────────────────────────────────────────── */
 
-  if (!db) {
-    return (
-      <div className="grid min-h-screen place-items-center text-slate-500">Loading…</div>
-    );
-  }
+  const store: StoreMaybe = {
+    db, // may be null — consumers only see it after RequireDb passes
 
-  /* ─── Store ────────────────────────────────────────────────────────── */
+    can: (f) => {
+      if (!db) return false;
+      return db.settings.permissions[db.settings.currentRole][f];
+    },
 
-  const store: Store = {
-    db,
-    can: (f) => db.settings.permissions[db.settings.currentRole][f],
-
-    /* ── Categories ───────────────────────────────────────────────── */
+    /* ── Categories ──────────────────────────────────────────────── */
 
     addCategory: (c) => {
       const tempId = uid();
@@ -189,7 +223,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         };
       }
 
-      patch((d) => ({ ...d, categories: d.categories.filter((c) => c.id !== id) }));
+      patch((d) => ({
+        ...d,
+        categories: d.categories.filter((c) => c.id !== id),
+      }));
 
       void api.deleteCategory(id).then((r) => {
         if (!r.ok) void resync();
@@ -197,7 +234,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       return { ok: true };
     },
 
-    /* ── Products ─────────────────────────────────────────────────── */
+    /* ── Products ────────────────────────────────────────────────── */
 
     addProduct: (p) => {
       const cur = ref.current!;
@@ -240,23 +277,28 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     },
 
     deleteProduct: (id) => {
-      patch((d) => ({ ...d, products: d.products.filter((p) => p.id !== id) }));
+      patch((d) => ({
+        ...d,
+        products: d.products.filter((p) => p.id !== id),
+      }));
 
       void api.deleteProduct(id).then((r) => {
         if (!r.ok) void resync();
       });
     },
 
-    /* ── Stock movement (creates a transaction + adjusts stock) ───── */
+    /* ── Stock movement ──────────────────────────────────────────── */
 
     move: (type, i) => {
       const cur = ref.current!;
       const p = cur.products.find((x) => x.id === i.productId);
 
-      // Client-side validation for instant feedback.
       if (!p) return { ok: false, error: "Please select a product." };
       if (!Number.isInteger(i.qty) || i.qty <= 0) {
-        return { ok: false, error: "Quantity must be a whole number greater than 0." };
+        return {
+          ok: false,
+          error: "Quantity must be a whole number greater than 0.",
+        };
       }
       if (type === "OUT" && i.qty > p.stock) {
         return {
@@ -267,9 +309,6 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
       const date = i.date ?? new Date().toISOString();
 
-      // Build an optimistic transaction. Its `ref` may not match the server's
-      // (which is computed server-side against the authoritative ledger), so
-      // we swap it for the server's canonical record once the response lands.
       const tempId = uid();
       const optimistic: Transaction = {
         id: tempId,
@@ -306,12 +345,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         })
         .then((r) => {
           if (!r.ok) {
-            // Server rejected (e.g. race with another tab) — resync to discard
-            // the optimistic row and restore the true stock.
             void resync();
           } else {
-            // Swap the temp transaction for the server's canonical record so
-            // `ref` matches what would be re-fetched. Stock is already correct.
             const real = r.data;
             patch((d) => ({
               ...d,
@@ -325,14 +360,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       return { ok: true };
     },
 
-    /* ── Settings ─────────────────────────────────────────────────── */
+    /* ── Settings ────────────────────────────────────────────────── */
 
     updateSettings: (s) => {
       const cur = ref.current!;
       const next = { ...cur.settings, ...s };
       patch((d) => ({ ...d, settings: next }));
 
-      // Only send the fields that actually changed — PATCH accepts partial.
       void api.patchSettings(s).then((r) => {
         if (!r.ok) void resync();
       });
@@ -350,14 +384,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         },
       }));
 
-      void api
-        .patchSettings({ role: r, feature: f, value: v })
-        .then((res) => {
-          if (!res.ok) void resync();
-        });
+      void api.patchSettings({ role: r, feature: f, value: v }).then((res) => {
+        if (!res.ok) void resync();
+      });
     },
 
-    /* ── Users ────────────────────────────────────────────────────── */
+    /* ── Users ───────────────────────────────────────────────────── */
 
     addUser: (u) => {
       const tempId = uid();
@@ -411,7 +443,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       });
     },
 
-    /* ── Reset ────────────────────────────────────────────────────── */
+    /* ── Reset ───────────────────────────────────────────────────── */
 
     resetData: () => {
       const seed = buildSeed();
@@ -422,5 +454,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     },
   };
 
+  // NOTE: always render children. `db` may be null here — that's fine,
+  // `<RequireDb>` (or any consumer of `useStore()`) handles the gate.
   return <Ctx.Provider value={store}>{children}</Ctx.Provider>;
 }

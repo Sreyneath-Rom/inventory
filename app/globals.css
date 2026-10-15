@@ -1,6 +1,5 @@
 @import "tailwindcss";
 
-/* Theme tokens → text-ink, text-brand, ring-brand/40, shadow-glass */
 @theme {
   --color-ink: #1e2a4a;
   --color-brand: #3b82f6;
@@ -8,7 +7,6 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
 
-/* Neumorphic palette — retint the whole app from here */
 :root {
   --neu-bg: #e8f0fc;
   --neu-bg-press: #e6eefa;
@@ -26,7 +24,7 @@ body {
   background-attachment: fixed;
 }
 
-/* ─── Custom utilities (v4) ─── */
+/* ─── Surfaces ─── */
 
 @utility glass {
   background: linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.36));
@@ -59,19 +57,21 @@ body {
     inset -4px -4px 9px var(--neu-light);
 }
 
+/* ─── Form field ─── */
+
 @utility field {
   @apply w-full rounded-2xl px-4 py-2.5 text-sm text-ink outline-none neu-inset
          placeholder:text-slate-400 focus:ring-2 focus:ring-brand/40;
 }
 
+/* ─── Tables ─── */
+
 @utility tbl {
   @apply w-full text-sm;
 }
-
-@utility tbl-head {
+.tbl th {
   @apply px-4 py-3 text-left text-xs font-semibold text-slate-500;
 }
-
-@utility tbl-cell {
+.tbl td {
   @apply border-t border-white/70 px-4 py-3;
 }

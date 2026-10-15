@@ -1,6 +1,13 @@
 "use client";
 import { useState } from "react";
-import { Trash2, UserPlus } from "lucide-react";
+import Link from "next/link";
+import {
+  Trash2,
+  UserPlus,
+  Settings2,
+  ShieldCheck,
+  Database,
+} from "lucide-react";
 import { Guard } from "@/components/ui/Guard";
 import { CardHeader, GlassCard } from "@/components/ui/GlassCard";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -42,7 +49,14 @@ function Switch({
 }
 
 export default function SettingsPage() {
-  const { db, updateSettings, setPermission, addUser, updateUser, removeUser, resetData } = useStore();
+  const {
+    db,
+    updateSettings,
+    setPermission,
+    updateUser,
+    removeUser,
+    resetData,
+  } = useStore();
   const s = db.settings;
   const toast = useToast();
   const [g, setG] = useState({
@@ -51,7 +65,6 @@ export default function SettingsPage() {
     currency: s.currency,
     defaultThreshold: String(s.defaultThreshold),
   });
-  const [u, setU] = useState({ name: "", email: "", role: "Staff" as Role });
 
   const saveGeneral = () => {
     updateSettings({
@@ -68,7 +81,7 @@ export default function SettingsPage() {
       <PageHeader title="Settings" subtitle="Preferences, access control and data" />
       <div className="grid gap-5 xl:grid-cols-2">
         <GlassCard>
-          <CardHeader icon={<span>⚙️</span>} title="General preferences" />
+          <CardHeader icon={<Settings2 size={18} />} title="General preferences" />
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Company name">
               <input
@@ -111,7 +124,7 @@ export default function SettingsPage() {
         </GlassCard>
 
         <GlassCard>
-          <CardHeader icon={<span>🔐</span>} title="Access control" />
+          <CardHeader icon={<ShieldCheck size={18} />} title="Access control" />
           <div className="neu-inset overflow-x-auto rounded-2xl">
             <table className="tbl">
               <thead>
@@ -167,7 +180,9 @@ export default function SettingsPage() {
                       <select
                         className="field w-auto! py-1.5!"
                         value={x.role}
-                        onChange={(e) => updateUser({ ...x, role: e.target.value as Role })}
+                        onChange={(e) =>
+                          updateUser({ ...x, role: e.target.value as Role })
+                        }
                       >
                         {ROLES.map((r) => (
                           <option key={r}>{r}</option>
@@ -185,53 +200,38 @@ export default function SettingsPage() {
                     </td>
                   </tr>
                 ))}
+                {s.users.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="py-6 text-center text-sm text-slate-500">
+                      No users yet.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
-          <form
-            className="grid gap-3 sm:grid-cols-[1fr_1fr_140px_auto]"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (!u.name.trim() || !u.email.trim())
-                return toast("Name and email are required", "err");
-              addUser({ ...u, name: u.name.trim(), email: u.email.trim() });
-              setU({ name: "", email: "", role: "Staff" });
-              toast("User added");
-            }}
-          >
-            <input
-              className="field"
-              placeholder="Full name"
-              value={u.name}
-              onChange={(e) => setU({ ...u, name: e.target.value })}
-            />
-            <input
-              className="field"
-              type="email"
-              placeholder="Email"
-              value={u.email}
-              onChange={(e) => setU({ ...u, email: e.target.value })}
-            />
-            <select
-              className="field"
-              value={u.role}
-              onChange={(e) => setU({ ...u, role: e.target.value as Role })}
-            >
-              {ROLES.map((r) => (
-                <option key={r}>{r}</option>
-              ))}
-            </select>
-            <Button type="submit">Add user</Button>
-          </form>
+          <p className="text-xs text-slate-500">
+            New accounts are created at{" "}
+            <Link href="/signup" className="font-semibold text-brand hover:underline">
+              /signup
+            </Link>
+            . The first account becomes Admin; subsequent accounts default to Staff — change their
+            role above. Removing a user here only removes their app profile; their login continues
+            to work until deleted in the Supabase dashboard.
+          </p>
         </GlassCard>
 
         <GlassCard className="xl:col-span-2">
-          <CardHeader icon={<span>💾</span>} title="Data" />
+          <CardHeader icon={<Database size={18} />} title="Data" />
           <div className="flex flex-wrap gap-3">
             <Button
               variant="ghost"
               onClick={() =>
-                download("inventory-backup.json", JSON.stringify(db, null, 2), "application/json")
+                download(
+                  "inventory-backup.json",
+                  JSON.stringify(db, null, 2),
+                  "application/json"
+                )
               }
             >
               Download backup (JSON)
@@ -239,13 +239,17 @@ export default function SettingsPage() {
             <Button
               variant="danger"
               onClick={() => {
-                if (confirm("Reset all data to the demo dataset?")) {
+                if (
+                  confirm(
+                    "This will permanently delete all products, categories, and transactions. Continue?"
+                  )
+                ) {
                   resetData();
-                  toast("Demo data restored");
+                  toast("All data cleared");
                 }
               }}
             >
-              Reset to demo data
+              Clear all data
             </Button>
           </div>
         </GlassCard>

@@ -18,7 +18,7 @@ type ProdRow = {
   price: number;
   stock: number;
   threshold: number;
-  emoji: string;
+  image: string | null;
 };
 
 type TxRow = {
@@ -67,7 +67,7 @@ const toProd = (r: ProdRow): Product => ({
   price: Number(r.price),
   stock: r.stock,
   threshold: r.threshold,
-  emoji: r.emoji,
+  image: r.image ?? "",
 });
 
 const toTx = (r: TxRow): Transaction => ({
@@ -103,17 +103,37 @@ export async function readDb(): Promise<DB> {
     sb.from("settings").select("*").eq("id", 1).single(),
   ]);
 
-  for (const r of [cats, prods, txs, users, settings]) {
+  // Everything except settings is a hard error if missing.
+  for (const r of [cats, prods, txs, users]) {
     if (r.error) throw new Error(`Supabase read failed: ${r.error.message}`);
   }
 
-  const s = settings.data as SetRow;
+  // The settings row is created by the schema SQL. If it's missing
+  // (fresh project, or manually deleted), insert it rather than failing.
+  let s = settings.data as SetRow | null;
 
-  // If the DB is empty, seed it. Mirrors the old file-backed behaviour
-  // where a missing db.json auto-populated on first read.
-  if ((prods.data as ProdRow[]).length === 0 && (cats.data as CatRow[]).length === 0) {
-    await replaceDb(buildSeed());
-    return readDb();
+  if (settings.error || !s) {
+    const seed = buildSeed();
+    const { error: insertErr } = await sb.from("settings").upsert({
+      id: 1,
+      company_name: seed.settings.companyName,
+      admin_name: seed.settings.adminName,
+      currency: seed.settings.currency,
+      default_threshold: seed.settings.defaultThreshold,
+      active_role: seed.settings.currentRole,
+      permissions: seed.settings.permissions,
+    });
+    if (insertErr) throw new Error(`Supabase read failed: ${insertErr.message}`);
+
+    s = {
+      id: 1,
+      company_name: seed.settings.companyName,
+      admin_name: seed.settings.adminName,
+      currency: seed.settings.currency,
+      default_threshold: seed.settings.defaultThreshold,
+      active_role: seed.settings.currentRole,
+      permissions: seed.settings.permissions,
+    };
   }
 
   const perms = s.permissions ?? {};
@@ -144,13 +164,6 @@ export async function readDb(): Promise<DB> {
 
 /* ─── Mutate ───────────────────────────────────────────────────────── */
 
-/**
- * Snapshot → apply → persist. Route handlers depend on this shape, so
- * the API contract matches the old file-backed version.
- *
- * NOTE: this only upserts. It cannot delete rows. For delete routes,
- * use the `delete*Row` helpers below instead.
- */
 export async function mutate<T>(fn: (db: DB) => T | Promise<T>): Promise<T> {
   const db = await readDb();
   const result = await fn(db);
@@ -180,7 +193,7 @@ async function persistSnapshot(db: DB): Promise<void> {
         price: p.price,
         stock: p.stock,
         threshold: p.threshold,
-        emoji: p.emoji,
+        image: p.image || null,
       }))
     );
     if (error) throw new Error(error.message);
@@ -228,12 +241,11 @@ async function persistSnapshot(db: DB): Promise<void> {
   if (sErr) throw new Error(sErr.message);
 }
 
-/* ─── Replace (used by PUT /api/db and reset) ──────────────────────── */
+/* ─── Replace ──────────────────────────────────────────────────────── */
 
 export async function replaceDb(next: DB): Promise<void> {
   const sb = createServerSupabase();
 
-  // Order matters: transactions FK → products, products FK → categories.
   await sb.from("transactions").delete().neq("id", "");
   await sb.from("products").delete().neq("id", "");
   await sb.from("categories").delete().neq("id", "");
@@ -258,7 +270,7 @@ export async function replaceDb(next: DB): Promise<void> {
         price: p.price,
         stock: p.stock,
         threshold: p.threshold,
-        emoji: p.emoji,
+        image: p.image || null,
       }))
     );
     if (error) throw new Error(error.message);
@@ -306,16 +318,8 @@ export async function replaceDb(next: DB): Promise<void> {
   if (sErr) throw new Error(sErr.message);
 }
 
-/* ─── Atomic stock movement (Postgres function) ────────────────────── */
+/* ─── Atomic stock movement ────────────────────────────────────────── */
 
-/**
- * Calls the `move_stock` Postgres function. The function:
- *   - locks the product row (FOR UPDATE)
- *   - serializes ref generation via an advisory lock on (type, year)
- *   - adjusts stock and inserts the ledger entry atomically
- *
- * The ref is generated inside the function, so we don't pass `p_ref`.
- */
 export async function moveStock(input: {
   type: TxType;
   productId: string;
@@ -358,11 +362,6 @@ export async function moveStock(input: {
 }
 
 /* ─── Delete helpers ──────────────────────────────────────────────── */
-/*
- * `mutate` only upserts — it can't remove rows. Any DELETE route must
- * call one of these helpers directly, otherwise the row survives in
- * Supabase and reappears on the next read.
- */
 
 export async function deleteCategoryRow(id: string): Promise<void> {
   const sb = createServerSupabase();

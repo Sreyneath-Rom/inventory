@@ -16,7 +16,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <Ctx.Provider value={push}>
       {children}
-      <div className="fixed bottom-5 right-5 z-[60] space-y-2">
+      <div className="fixed bottom-5 right-5 z-60 space-y-2">
         {items.map((t) => (
           <div key={t.id} className={cn("glass rounded-2xl px-4 py-3 text-sm font-medium", t.kind === "err" ? "text-red-600" : "text-emerald-700")}>
             {t.msg}
