@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-/* Tokens used by other files via `text-ink`, `text-brand`, `shadow-glass` */
+/* Theme tokens → text-ink, text-brand, ring-brand/40, shadow-glass */
 @theme {
   --color-ink: #1e2a4a;
   --color-brand: #3b82f6;
@@ -8,7 +8,7 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
 
-/* Neumorphic palette — change these two numbers to retint the whole app */
+/* Neumorphic palette — retint the whole app from here */
 :root {
   --neu-bg: #e8f0fc;
   --neu-bg-press: #e6eefa;
@@ -26,53 +26,52 @@ body {
   background-attachment: fixed;
 }
 
-@layer components {
-  /* ─── Surfaces ─── */
-  .glass {
-    background: linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.36));
-    backdrop-filter: blur(22px) saturate(170%);
-    -webkit-backdrop-filter: blur(22px) saturate(170%);
-    border: 1px solid rgba(255, 255, 255, 0.75);
-    box-shadow:
-      0 10px 30px rgba(80, 110, 180, 0.15),
-      inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  }
+/* ─── Custom utilities (v4) ─── */
 
-  /* Neumorphic raised — 3 sizes share the same recipe */
-  .neu,
-  .neu-sm,
-  .neu-inset {
-    background: var(--neu-bg);
-  }
-  .neu {
-    box-shadow:
-      8px 8px 18px var(--neu-dark),
-      -8px -8px 18px var(--neu-light);
-  }
-  .neu-sm {
-    box-shadow:
-      4px 4px 10px var(--neu-dark),
-      -4px -4px 10px var(--neu-light);
-  }
-  .neu-inset {
-    background: var(--neu-bg-press);
-    box-shadow:
-      inset 4px 4px 9px var(--neu-dark),
-      inset -4px -4px 9px var(--neu-light);
-  }
+@utility glass {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.36));
+  backdrop-filter: blur(22px) saturate(170%);
+  -webkit-backdrop-filter: blur(22px) saturate(170%);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  box-shadow:
+    0 10px 30px rgba(80, 110, 180, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
 
-  /* ─── Form fields & tables ─── */
-  .field {
-    @apply w-full rounded-2xl px-4 py-2.5 text-sm text-ink outline-none neu-inset
-           placeholder:text-slate-400 focus:ring-2 focus:ring-brand/40;
-  }
-  .tbl {
-    @apply w-full text-sm;
-  }
-  .tbl th {
-    @apply px-4 py-3 text-left text-xs font-semibold text-slate-500;
-  }
-  .tbl td {
-    @apply border-t border-white/70 px-4 py-3;
-  }
+@utility neu {
+  background: var(--neu-bg);
+  box-shadow:
+    8px 8px 18px var(--neu-dark),
+    -8px -8px 18px var(--neu-light);
+}
+
+@utility neu-sm {
+  background: var(--neu-bg);
+  box-shadow:
+    4px 4px 10px var(--neu-dark),
+    -4px -4px 10px var(--neu-light);
+}
+
+@utility neu-inset {
+  background: var(--neu-bg-press);
+  box-shadow:
+    inset 4px 4px 9px var(--neu-dark),
+    inset -4px -4px 9px var(--neu-light);
+}
+
+@utility field {
+  @apply w-full rounded-2xl px-4 py-2.5 text-sm text-ink outline-none neu-inset
+         placeholder:text-slate-400 focus:ring-2 focus:ring-brand/40;
+}
+
+@utility tbl {
+  @apply w-full text-sm;
+}
+
+@utility tbl-head {
+  @apply px-4 py-3 text-left text-xs font-semibold text-slate-500;
+}
+
+@utility tbl-cell {
+  @apply border-t border-white/70 px-4 py-3;
 }
