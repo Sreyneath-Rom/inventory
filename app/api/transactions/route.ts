@@ -3,7 +3,6 @@ import { mutate, readDb } from "@/lib/server/db";
 import { nextRef, uid } from "@/lib/utils";
 import type { Transaction, TxType } from "@/lib/types";
 
-export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
   const url = new URL(req.url);

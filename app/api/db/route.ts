@@ -2,8 +2,6 @@ import { NextResponse } from "next/server";
 import { readDb, replaceDb } from "@/lib/server/db";
 import type { DB } from "@/lib/types";
 
-export const dynamic = "force-dynamic";
-
 export async function GET() {
   return NextResponse.json(await readDb());
 }

@@ -3,7 +3,6 @@ import { mutate, readDb } from "@/lib/server/db";
 import { uid } from "@/lib/utils";
 import type { Product } from "@/lib/types";
 
-export const dynamic = "force-dynamic";
 
 export async function GET() {
   const db = await readDb();

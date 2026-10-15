@@ -1,25 +1,30 @@
 import { NextResponse } from "next/server";
-import { mutate, readDb } from "@/lib/server/db";
+import { readDb, deleteTransactionRow } from "@/lib/server/db";
+import { createServerSupabase } from "@/lib/supabase/server";
 
-export const dynamic = "force-dynamic";
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(_req: Request, ctx: Ctx) {
   const { id } = await ctx.params;
   const tx = (await readDb()).transactions.find((t) => t.id === id);
-  return tx ? NextResponse.json(tx) : NextResponse.json({ error: "Not found" }, { status: 404 });
+  return tx
+    ? NextResponse.json(tx)
+    : NextResponse.json({ error: "Not found" }, { status: 404 });
 }
 
 /**
- * Deleting a transaction reverses its stock impact. If the reversal would push
- * a product below zero (because later OUTs already consumed the stock), the
- * request is rejected.
+ * Deleting a transaction reverses its stock impact. If the reversal would
+ * push a product below zero (because later OUTs already consumed the
+ * stock), the request is rejected.
  */
 export async function DELETE(_req: Request, ctx: Ctx) {
   const { id } = await ctx.params;
   const db = await readDb();
+
   const tx = db.transactions.find((t) => t.id === id);
-  if (!tx) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (!tx) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
 
   const p = db.products.find((x) => x.id === tx.productId);
   if (p) {
@@ -30,12 +35,19 @@ export async function DELETE(_req: Request, ctx: Ctx) {
         { status: 409 }
       );
     }
+
+    // Narrow update on the one product row — do NOT call mutate() here,
+    // because that would re-upsert the transaction we're deleting.
+    const sb = createServerSupabase();
+    const { error: stockErr } = await sb
+      .from("products")
+      .update({ stock: p.stock + delta })
+      .eq("id", tx.productId);
+    if (stockErr) {
+      return NextResponse.json({ error: stockErr.message }, { status: 500 });
+    }
   }
 
-  await mutate((d) => {
-    const product = d.products.find((x) => x.id === tx.productId);
-    if (product) product.stock += tx.type === "IN" ? -tx.qty : tx.qty;
-    d.transactions = d.transactions.filter((t) => t.id !== id);
-  });
+  await deleteTransactionRow(id);
   return new NextResponse(null, { status: 204 });
 }

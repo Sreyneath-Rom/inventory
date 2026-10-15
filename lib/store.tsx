@@ -152,11 +152,20 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     /* ── Categories ───────────────────────────────────────────────── */
 
     addCategory: (c) => {
-      const optimistic: Category = { ...c, id: uid() };
+      const tempId = uid();
+      const optimistic: Category = { ...c, id: tempId };
       patch((d) => ({ ...d, categories: [...d.categories, optimistic] }));
 
       void api.createCategory(c).then((r) => {
-        if (!r.ok) void resync();
+        if (!r.ok) {
+          void resync();
+        } else {
+          const real = r.data;
+          patch((d) => ({
+            ...d,
+            categories: d.categories.map((x) => (x.id === tempId ? real : x)),
+          }));
+        }
       });
     },
 
@@ -196,11 +205,20 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         return { ok: false, error: `SKU "${p.sku}" already exists.` };
       }
 
-      const optimistic: Product = { ...p, id: uid() };
+      const tempId = uid();
+      const optimistic: Product = { ...p, id: tempId };
       patch((d) => ({ ...d, products: [optimistic, ...d.products] }));
 
       void api.createProduct(p).then((r) => {
-        if (!r.ok) void resync();
+        if (!r.ok) {
+          void resync();
+        } else {
+          const real = r.data;
+          patch((d) => ({
+            ...d,
+            products: d.products.map((x) => (x.id === tempId ? real : x)),
+          }));
+        }
       });
       return { ok: true };
     },
@@ -251,7 +269,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
       // Build an optimistic transaction. Its `ref` may not match the server's
       // (which is computed server-side against the authoritative ledger), so
-      // we mark it for reconciliation once the server responds.
+      // we swap it for the server's canonical record once the response lands.
       const tempId = uid();
       const optimistic: Transaction = {
         id: tempId,
@@ -342,14 +360,26 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     /* ── Users ────────────────────────────────────────────────────── */
 
     addUser: (u) => {
-      const optimistic: AppUser = { ...u, id: uid() };
+      const tempId = uid();
+      const optimistic: AppUser = { ...u, id: tempId };
       patch((d) => ({
         ...d,
         settings: { ...d.settings, users: [...d.settings.users, optimistic] },
       }));
 
       void api.createUser(u).then((r) => {
-        if (!r.ok) void resync();
+        if (!r.ok) {
+          void resync();
+        } else {
+          const real = r.data;
+          patch((d) => ({
+            ...d,
+            settings: {
+              ...d.settings,
+              users: d.settings.users.map((x) => (x.id === tempId ? real : x)),
+            },
+          }));
+        }
       });
     },
 

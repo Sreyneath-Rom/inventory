@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { mutate, readDb } from "@/lib/server/db";
 import { FEATURES, ROLES, type Feature, type Role } from "@/lib/types";
 
-export const dynamic = "force-dynamic";
 
 export async function GET() {
   return NextResponse.json((await readDb()).settings);
