@@ -1,69 +1,81 @@
-import Image from "next/image";
+"use client";
+import Link from "next/link";
+import { useMemo, useState } from "react";
+import { AlertTriangle, ArrowRight, ArrowUpRight, ArrowRightCircle, Boxes, CalendarDays, LineChart } from "lucide-react";
+import { Guard } from "@/components/ui/Guard";
+import { CardHeader, GlassCard } from "@/components/ui/GlassCard";
+import { Delta, StatCard } from "@/components/dashboard/StatCard";
+import { ChartLegend, MovementChart } from "@/components/dashboard/MovementChart";
+import { RecentList, RecentTable } from "@/components/dashboard/RecentTransactions";
+import { LowStockAlerts } from "@/components/dashboard/LowStockAlerts";
+import { QuickActions } from "@/components/dashboard/QuickActions";
+import { TopProducts } from "@/components/dashboard/TopProducts";
+import { useStore } from "@/lib/store";
+import { dailySeries, periodTotals, topProducts } from "@/lib/stats";
+import { pctChange } from "@/lib/utils";
 
-export default function Home() {
+export default function DashboardPage() {
+  const { db } = useStore();
+  const { products, transactions, settings } = db;
+  const [days, setDays] = useState(7);
+
+  const low = products.filter((p: { stock: number; threshold: number; }) => p.stock <= p.threshold);
+  const inT = periodTotals(transactions, "IN", 30);
+  const outT = periodTotals(transactions, "OUT", 30);
+  const series = useMemo(() => dailySeries(transactions, days), [transactions, days]);
+  const top = useMemo(() => topProducts(transactions, products), [transactions, products]);
+  const units = products.reduce((s: any, p: { stock: any; }) => s + p.stock, 0);
+  const h = new Date().getHours();
+  const greet = h < 12 ? "Good Morning" : h < 18 ? "Good Afternoon" : "Good Evening";
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <Guard feature="dashboard">
+      <div className="mb-5">
+        <p className="text-sm text-slate-600">{greet},</p>
+        <h1 className="text-3xl font-bold">{settings.adminName} 👋</h1>
+        <p className="text-sm text-slate-500">Here&apos;s what&apos;s happening with your inventory today.</p>
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-[1fr_320px]">
+        <div className="min-w-0 space-y-5">
+          <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-4">
+            <StatCard tone="blue" icon={<Boxes size={30} />} label="Total Products" value={products.length}
+              footer={<span><b className="text-emerald-600">{units.toLocaleString()}</b> units in stock</span>} />
+            <StatCard tone="green" icon={<ArrowUpRight size={32} />} label="Total Stock In" value={inT.cur.toLocaleString()}
+              footer={<Delta pct={pctChange(inT.cur, inT.prev)} />} />
+            <StatCard tone="orange" icon={<ArrowRightCircle size={30} />} label="Total Stock Out" value={outT.cur.toLocaleString()}
+              footer={<Delta pct={pctChange(outT.cur, outT.prev)} />} />
+            <StatCard tone="purple" icon={<AlertTriangle size={30} />} label="Low Stock Items" value={low.length}
+              footer={<Link href="/products?filter=low" className="flex items-center gap-1 font-semibold text-brand">View details <ArrowRight size={12} /></Link>} />
+          </div>
+
+          <div className="grid gap-5 lg:grid-cols-5">
+            <GlassCard className="lg:col-span-3">
+              <CardHeader icon={<LineChart size={18} />} title="Stock Movement" action={
+                <label className="neu-sm flex items-center gap-2 rounded-xl px-3 py-1.5 text-xs">
+                  <CalendarDays size={14} />
+                  <select value={days} onChange={(e) => setDays(+e.target.value)} className="bg-transparent outline-none">
+                    <option value={7}>Last 7 days</option><option value={14}>Last 14 days</option><option value={30}>Last 30 days</option>
+                  </select>
+                </label>
+              } />
+              <ChartLegend />
+              <MovementChart data={series} />
+            </GlassCard>
+            <div className="lg:col-span-2"><RecentList tx={transactions} /></div>
+          </div>
+
+          <div className="grid gap-5 lg:grid-cols-5">
+            <div className="lg:col-span-2"><LowStockAlerts items={low} /></div>
+            <div className="min-w-0 lg:col-span-3"><RecentTable tx={transactions} currency={settings.currency} /></div>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+        <div className="space-y-5">
+          <QuickActions />
+          <TopProducts items={top} />
         </div>
-      </main>
-    </div>
+      </div>
+    </Guard>
   );
 }
