@@ -1,14 +1,19 @@
 import { NextResponse } from "next/server";
+import { requireUser } from "@/lib/auth";
 import { mutate, readDb } from "@/lib/server/db";
 import { uid } from "@/lib/utils";
 import type { Category } from "@/lib/types";
 
 
 export async function GET() {
+  const auth = await requireUser();
+  if (!auth.user) return auth.response;
   return NextResponse.json((await readDb()).categories);
 }
 
 export async function POST(req: Request) {
+  const auth = await requireUser();
+  if (!auth.user) return auth.response;
   let body: Partial<Category>;
   try {
     body = await req.json();

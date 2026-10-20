@@ -26,6 +26,14 @@ export async function POST(req: Request) {
 
   const admin = createServerSupabase();
 
+  // Check first: if this query fails we must not fall through to "first user = Admin".
+  const { count, error: countErr } = await admin
+    .from("app_users")
+    .select("*", { count: "exact", head: true });
+  if (countErr) {
+    return NextResponse.json({ error: "Could not verify existing users." }, { status: 500 });
+  }
+
   const { data: authUser, error: createErr } = await admin.auth.admin.createUser({
     email,
     password,
@@ -37,11 +45,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: createErr.message }, { status: 400 });
   }
 
-  const { count } = await admin
-    .from("app_users")
-    .select("*", { count: "exact", head: true });
-
-  const role = (count ?? 0) === 0 ? "Admin" : "Staff";
+  const role = count === 0 ? "Admin" : "Staff";
 
   const { error: insertErr } = await admin.from("app_users").insert({
     id: authUser.user.id,

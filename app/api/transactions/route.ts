@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
+import { requireUser } from "@/lib/auth";
 import { mutate, readDb } from "@/lib/server/db";
 import { nextRef, uid } from "@/lib/utils";
 import type { Transaction, TxType } from "@/lib/types";
 
 
 export async function GET(req: Request) {
+  const auth = await requireUser();
+  if (!auth.user) return auth.response;
   const url = new URL(req.url);
   const type = url.searchParams.get("type") as TxType | null;
   const productId = url.searchParams.get("productId");
@@ -18,6 +21,8 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const auth = await requireUser();
+  if (!auth.user) return auth.response;
   const body = await req.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
 
@@ -43,7 +48,11 @@ export async function POST(req: Request) {
     );
   }
 
-  const date = (body.date as string) || new Date().toISOString();
+  const parsed = body.date ? new Date(body.date) : new Date();
+  if (Number.isNaN(parsed.getTime())) {
+    return NextResponse.json({ error: "Invalid date." }, { status: 422 });
+  }
+  const date = parsed.toISOString();
 
   const tx = await mutate<Transaction>((d) => {
     const p = d.products.find((x) => x.id === productId)!;
@@ -54,7 +63,7 @@ export async function POST(req: Request) {
       productId,
       productName: p.name,
       qty,
-      unitPrice: Number(body.unitPrice) || 0,
+      unitPrice: Math.max(0, Number(body.unitPrice) || 0),
       party: body.party || undefined,
       note: body.note || undefined,
       date,

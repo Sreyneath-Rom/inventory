@@ -1,0 +1,45 @@
+import { NextResponse } from "next/server";
+import { requireUser } from "@/lib/auth";
+import { deleteEmployeeRow, EmployeeError, updateEmployeeRow } from "@/lib/server/db";
+import { normalizeEmployee, validateEmployeeFields } from "@/lib/employees";
+import type { EmployeeFormData } from "@/lib/types";
+
+type Ctx = { params: Promise<{ id: string }> };
+
+export async function PUT(req: Request, { params }: Ctx) {
+  const auth = await requireUser();
+  if (!auth.user) return auth.response;
+  const { id } = await params;
+
+  let body: EmployeeFormData;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
+  }
+
+  const data = normalizeEmployee(body);
+  const problem = validateEmployeeFields(data);
+  if (problem) return NextResponse.json({ error: problem }, { status: 400 });
+
+  try {
+    return NextResponse.json(await updateEmployeeRow({ id, ...data }));
+  } catch (e) {
+    const status = e instanceof EmployeeError ? e.status : 500;
+    return NextResponse.json({ error: e instanceof Error ? e.message : "Server error" }, { status });
+  }
+}
+
+export async function DELETE(_req: Request, { params }: Ctx) {
+  const auth = await requireUser();
+  if (!auth.user) return auth.response;
+  const { id } = await params;
+
+  try {
+    await deleteEmployeeRow(id);
+    return new NextResponse(null, { status: 204 });
+  } catch (e) {
+    const status = e instanceof EmployeeError ? e.status : 500;
+    return NextResponse.json({ error: e instanceof Error ? e.message : "Server error" }, { status });
+  }
+}

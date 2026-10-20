@@ -3,26 +3,26 @@ import { FEATURES } from "./types";
 
 const perm = (on: Feature[]) =>
   Object.fromEntries(FEATURES.map((f) => [f.key, on.includes(f.key)])) as Record<Feature, boolean>;
+
 const all = FEATURES.map((f) => f.key);
 
 export const defaultPermissions: Record<Role, Record<Feature, boolean>> = {
-  Admin: perm(all),
+  Admin:   perm(all),
   Manager: perm(all.filter((f) => f !== "settings")),
-  Staff: perm(["dashboard", "products", "stockIn", "stockOut"]),
+  Staff:   perm(["dashboard", "products", "stockIn", "stockOut"]),
 };
 
 /**
  * Starting state for a fresh install.
- *
- * Intentionally empty — no categories, no products, no transactions.
- * The UI shows its empty states until you add real data. Settings and the
- * default admin user are still seeded so the app boots.
+ * NOTE: `settings.users` is written to `public.app_users` by PUT /api/db —
+ * it is not stored on the settings row.
  */
 export function buildSeed(): DB {
   return {
     categories: [],
     products: [],
     transactions: [],
+    employees: [],
     settings: {
       companyName: "Inventory Co.",
       adminName: "Admin",
@@ -30,9 +30,7 @@ export function buildSeed(): DB {
       defaultThreshold: 10,
       currentRole: "Admin",
       permissions: defaultPermissions,
-      users: [
-        { id: "u1", name: "Admin", email: "admin@example.com", role: "Admin" },
-      ],
+      users: [{ id: "u1", name: "Admin", email: "admin@example.com", role: "Admin" }],
     },
   };
 }

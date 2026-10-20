@@ -1,5 +1,7 @@
 export const toCSV = (rows: (string | number)[][]) =>
-  rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+  rows
+    .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
+    .join("\n");
 
 export function download(name: string, text: string, mime = "text/csv") {
   const a = document.createElement("a");

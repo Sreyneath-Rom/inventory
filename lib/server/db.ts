@@ -1,6 +1,9 @@
-import type { DB, Product, Category, Transaction, Settings, AppUser, TxType } from "../types";
+import type {
+  DB, Product, Category, Transaction, Settings, AppUser, TxType,
+  Employee, EmployeeFormData,
+} from "../types";
 import { FEATURES, ROLES } from "../types";
-import { buildSeed } from "../seed";
+import { buildSeed, defaultPermissions } from "../seed";
 import { createServerSupabase } from "../supabase/server";
 import { uid } from "../utils";
 
@@ -39,6 +42,21 @@ type UserRow = {
   name: string;
   email: string;
   role: AppUser["role"];
+};
+
+type EmpRow = {
+  id: string;
+  employee_code: string;
+  first_name: string;
+  last_name: string;
+  email: string;
+  phone: string | null;
+  department: string;
+  job_title: string;
+  role: Employee["role"];
+  status: Employee["status"];
+  hire_date: string;
+  salary: number | string;
 };
 
 type SetRow = {
@@ -90,21 +108,52 @@ const toUser = (r: UserRow): AppUser => ({
   role: r.role,
 });
 
+const toEmp = (r: EmpRow): Employee => ({
+  id: r.id,
+  employeeCode: r.employee_code,
+  firstName: r.first_name,
+  lastName: r.last_name,
+  email: r.email,
+  phone: r.phone ?? "",
+  department: r.department,
+  jobTitle: r.job_title,
+  role: r.role,
+  status: r.status,
+  hireDate: String(r.hire_date).slice(0, 10),
+  salary: Number(r.salary),
+});
+
+const fromEmp = (e: Employee): EmpRow => ({
+  id: e.id,
+  employee_code: e.employeeCode,
+  first_name: e.firstName,
+  last_name: e.lastName,
+  email: e.email,
+  phone: e.phone || null,
+  department: e.department,
+  job_title: e.jobTitle,
+  role: e.role,
+  status: e.status,
+  hire_date: e.hireDate,
+  salary: e.salary,
+});
+
 /* ─── Read ─────────────────────────────────────────────────────────── */
 
 export async function readDb(): Promise<DB> {
   const sb = createServerSupabase();
 
-  const [cats, prods, txs, users, settings] = await Promise.all([
+  const [cats, prods, txs, users, emps, settings] = await Promise.all([
     sb.from("categories").select("*").order("name"),
     sb.from("products").select("*").order("created_at", { ascending: false }),
     sb.from("transactions").select("*").order("date", { ascending: false }),
     sb.from("app_users").select("*").order("name"),
+    sb.from("employees").select("*").order("created_at", { ascending: false }),
     sb.from("settings").select("*").eq("id", 1).single(),
   ]);
 
   // Everything except settings is a hard error if missing.
-  for (const r of [cats, prods, txs, users]) {
+  for (const r of [cats, prods, txs, users, emps]) {
     if (r.error) throw new Error(`Supabase read failed: ${r.error.message}`);
   }
 
@@ -141,7 +190,11 @@ export async function readDb(): Promise<DB> {
     ROLES.map((role) => [
       role,
       Object.fromEntries(
-        FEATURES.map((f) => [f.key, role === "Admin" ? true : !!perms?.[role]?.[f.key]])
+        FEATURES.map((f) => [
+          f.key,
+          // Admin is always on; features added later fall back to the default.
+          role === "Admin" ? true : perms?.[role]?.[f.key] ?? defaultPermissions[role][f.key],
+        ])
       ),
     ])
   ) as Settings["permissions"];
@@ -150,6 +203,7 @@ export async function readDb(): Promise<DB> {
     categories: (cats.data as CatRow[]).map(toCat),
     products: (prods.data as ProdRow[]).map(toProd),
     transactions: (txs.data as TxRow[]).map(toTx),
+    employees: (emps.data as EmpRow[]).map(toEmp),
     settings: {
       companyName: s.company_name,
       adminName: s.admin_name,
@@ -193,7 +247,7 @@ async function persistSnapshot(db: DB): Promise<void> {
         price: p.price,
         stock: p.stock,
         threshold: p.threshold,
-        image: p.image || null,
+        image: p.image ?? "",
       }))
     );
     if (error) throw new Error(error.message);
@@ -229,6 +283,11 @@ async function persistSnapshot(db: DB): Promise<void> {
     if (error) throw new Error(error.message);
   }
 
+  if (db.employees?.length) {
+    const { error } = await sb.from("employees").upsert(db.employees.map(fromEmp));
+    if (error) throw new Error(error.message);
+  }
+
   const { error: sErr } = await sb.from("settings").upsert({
     id: 1,
     company_name: db.settings.companyName,
@@ -250,6 +309,7 @@ export async function replaceDb(next: DB): Promise<void> {
   await sb.from("products").delete().neq("id", "");
   await sb.from("categories").delete().neq("id", "");
   await sb.from("app_users").delete().neq("id", "");
+  await sb.from("employees").delete().neq("id", "");
 
   if (next.categories.length) {
     const { error } = await sb.from("categories").insert(
@@ -270,7 +330,7 @@ export async function replaceDb(next: DB): Promise<void> {
         price: p.price,
         stock: p.stock,
         threshold: p.threshold,
-        image: p.image || null,
+        image: p.image ?? "",
       }))
     );
     if (error) throw new Error(error.message);
@@ -303,6 +363,11 @@ export async function replaceDb(next: DB): Promise<void> {
         role: u.role,
       }))
     );
+    if (error) throw new Error(error.message);
+  }
+
+  if (next.employees?.length) {
+    const { error } = await sb.from("employees").insert(next.employees.map(fromEmp));
     if (error) throw new Error(error.message);
   }
 
@@ -385,4 +450,47 @@ export async function deleteTransactionRow(id: string): Promise<void> {
   const sb = createServerSupabase();
   const { error } = await sb.from("transactions").delete().eq("id", id);
   if (error) throw new Error(error.message);
+}
+
+/* ─── Employees ───────────────────────────────────────────────────── */
+
+export class EmployeeError extends Error {
+  constructor(message: string, public status: number = 500) {
+    super(message);
+  }
+}
+
+function mapEmployeeError(error: { message: string; code?: string }): EmployeeError {
+  if (error.code === "23505") {
+    const m = error.message.toLowerCase();
+    if (m.includes("email")) return new EmployeeError("This email address is already registered.", 409);
+    if (m.includes("code")) return new EmployeeError("This employee ID is already in use.", 409);
+    return new EmployeeError("An employee with these details already exists.", 409);
+  }
+  if (error.code === "42P01")
+    return new EmployeeError("The employees table is missing. Run supabase/employees.sql first.", 500);
+  return new EmployeeError(error.message, 500);
+}
+
+export async function createEmployeeRow(input: EmployeeFormData): Promise<Employee> {
+  const sb = createServerSupabase();
+  const emp: Employee = { id: crypto.randomUUID(), ...input };
+  const { data, error } = await sb.from("employees").insert(fromEmp(emp)).select("*").single();
+  if (error) throw mapEmployeeError(error);
+  return toEmp(data as EmpRow);
+}
+
+export async function updateEmployeeRow(emp: Employee): Promise<Employee> {
+  const sb = createServerSupabase();
+  const { id, ...row } = fromEmp(emp);
+  const { data, error } = await sb.from("employees").update(row).eq("id", id).select("*").maybeSingle();
+  if (error) throw mapEmployeeError(error);
+  if (!data) throw new EmployeeError("Employee not found.", 404);
+  return toEmp(data as EmpRow);
+}
+
+export async function deleteEmployeeRow(id: string): Promise<void> {
+  const sb = createServerSupabase();
+  const { error } = await sb.from("employees").delete().eq("id", id);
+  if (error) throw mapEmployeeError(error);
 }

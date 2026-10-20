@@ -1,11 +1,7 @@
 import type { Product, Transaction, TxType } from "./types";
 import { addDays, dayKey, endOfDay, startOfDay } from "./utils";
 
-export interface Point {
-  label: string;
-  in: number;
-  out: number;
-}
+export interface Point { label: string; in: number; out: number; }
 
 export function rangeSeries(tx: Transaction[], from: Date, to: Date): Point[] {
   const map = new Map<string, Point>();
@@ -13,8 +9,7 @@ export function rangeSeries(tx: Transaction[], from: Date, to: Date): Point[] {
   for (let d = startOfDay(from); d <= to; d = addDays(d, 1)) {
     const p = {
       label: d.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-      in: 0,
-      out: 0,
+      in: 0, out: 0,
     };
     map.set(dayKey(d), p);
     out.push(p);
@@ -31,13 +26,11 @@ export const dailySeries = (tx: Transaction[], days: number) => {
   return rangeSeries(tx, addDays(end, -(days - 1)), endOfDay(end));
 };
 
-/** Total qty in the last `days` days vs the `days` before that. */
 export function periodTotals(tx: Transaction[], type: TxType, days: number) {
   const now = new Date();
   const curFrom = startOfDay(addDays(now, -(days - 1)));
   const prevFrom = addDays(curFrom, -days);
-  let cur = 0,
-    prev = 0;
+  let cur = 0, prev = 0;
   tx.forEach((t) => {
     if (t.type !== type) return;
     const d = new Date(t.date);
@@ -48,10 +41,7 @@ export function periodTotals(tx: Transaction[], type: TxType, days: number) {
 }
 
 export function topProducts(
-  tx: Transaction[],
-  products: Product[],
-  days = 30,
-  n = 5,
+  tx: Transaction[], products: Product[], days = 30, n = 5,
 ) {
   const from = startOfDay(addDays(new Date(), -(days - 1)));
   const sums = new Map<string, number>();

@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
+import { requireUser } from "@/lib/auth";
 import { readDb, deleteTransactionRow } from "@/lib/server/db";
 import { createServerSupabase } from "@/lib/supabase/server";
 
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(_req: Request, ctx: Ctx) {
+  const auth = await requireUser();
+  if (!auth.user) return auth.response;
   const { id } = await ctx.params;
   const tx = (await readDb()).transactions.find((t) => t.id === id);
   return tx
@@ -18,6 +21,8 @@ export async function GET(_req: Request, ctx: Ctx) {
  * stock), the request is rejected.
  */
 export async function DELETE(_req: Request, ctx: Ctx) {
+  const auth = await requireUser();
+  if (!auth.user) return auth.response;
   const { id } = await ctx.params;
   const db = await readDb();
 

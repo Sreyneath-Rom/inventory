@@ -1,15 +1,20 @@
 import { NextResponse } from "next/server";
+import { requireUser } from "@/lib/auth";
 import { mutate, readDb } from "@/lib/server/db";
 import { uid } from "@/lib/utils";
 import type { Product } from "@/lib/types";
 
 
 export async function GET() {
+  const auth = await requireUser();
+  if (!auth.user) return auth.response;
   const db = await readDb();
   return NextResponse.json(db.products);
 }
 
 export async function POST(req: Request) {
+  const auth = await requireUser();
+  if (!auth.user) return auth.response;
   let body: Partial<Product>;
   try {
     body = await req.json();
@@ -40,7 +45,7 @@ export async function POST(req: Request) {
     price: Math.max(0, Number(body.price) || 0),
     stock: Math.max(0, Math.floor(Number(body.stock) || 0)),
     threshold: Math.max(0, Math.floor(Number(body.threshold) || 0)),
-    emoji: body.emoji || "📦",
+    image: body.image ?? "",
   };
 
   await mutate((d) => {

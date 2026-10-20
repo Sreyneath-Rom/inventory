@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
+import { requireUser } from "@/lib/auth";
 import { mutate, readDb, deleteCategoryRow } from "@/lib/server/db";
 
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(_req: Request, ctx: Ctx) {
+  const auth = await requireUser();
+  if (!auth.user) return auth.response;
   const { id } = await ctx.params;
   const cat = (await readDb()).categories.find((c) => c.id === id);
   return cat
@@ -12,6 +15,8 @@ export async function GET(_req: Request, ctx: Ctx) {
 }
 
 export async function PUT(req: Request, ctx: Ctx) {
+  const auth = await requireUser();
+  if (!auth.user) return auth.response;
   const { id } = await ctx.params;
   const body = await req.json().catch(() => null);
   if (!body) {
@@ -45,6 +50,8 @@ export async function PUT(req: Request, ctx: Ctx) {
 }
 
 export async function DELETE(_req: Request, ctx: Ctx) {
+  const auth = await requireUser();
+  if (!auth.user) return auth.response;
   const { id } = await ctx.params;
   const db = await readDb();
 

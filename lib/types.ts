@@ -1,29 +1,29 @@
+// ─── Feature / role / tx-type ──────────────────────────────────────────
 export type Feature =
-  | "dashboard"
-  | "products"
-  | "categories"
-  | "stockIn"
-  | "stockOut"
-  | "reports"
-  | "settings";
+  | "dashboard" | "products" | "categories" | "stockIn"
+  | "stockOut" | "employees" | "reports" | "settings";
+
 export type Role = "Admin" | "Manager" | "Staff";
 export type TxType = "IN" | "OUT";
 
 export const ROLES: Role[] = ["Admin", "Manager", "Staff"];
 export const FEATURES: { key: Feature; label: string }[] = [
-  { key: "dashboard", label: "Dashboard" },
-  { key: "products", label: "Products" },
+  { key: "dashboard",  label: "Dashboard"  },
+  { key: "products",   label: "Products"   },
   { key: "categories", label: "Categories" },
-  { key: "stockIn", label: "Stock In" },
-  { key: "stockOut", label: "Stock Out" },
-  { key: "reports", label: "Reports" },
-  { key: "settings", label: "Settings" },
+  { key: "stockIn",    label: "Stock In"   },
+  { key: "stockOut",   label: "Stock Out"  },
+  { key: "employees",  label: "Employees"  },
+  { key: "reports",    label: "Reports"    },
+  { key: "settings",   label: "Settings"   },
 ];
 
+// ─── Domain ────────────────────────────────────────────────────────────
 export interface Category {
   id: string;
   name: string;
   color: string;
+  createdAt?: string;
 }
 
 export interface Product {
@@ -37,6 +37,7 @@ export interface Product {
   stock: number;
   threshold: number;
   image: string;
+  createdAt?: string;
 }
 
 export interface Transaction {
@@ -49,7 +50,8 @@ export interface Transaction {
   unitPrice: number;
   party?: string;
   note?: string;
-  date: string; // ISO
+  date: string;         // ISO
+  createdAt?: string;
 }
 
 export interface AppUser {
@@ -57,14 +59,19 @@ export interface AppUser {
   name: string;
   email: string;
   role: Role;
+  createdAt?: string;
 }
 
+/**
+ * NOTE: `users` is NOT stored on the settings row — it lives in
+ * `public.app_users`. `GET /api/db` joins it in, `PUT /api/db` fans it back out.
+ */
 export interface Settings {
   companyName: string;
   adminName: string;
   currency: string;
   defaultThreshold: number;
-  currentRole: Role;
+  currentRole: Role;    // SQL column: active_role
   users: AppUser[];
   permissions: Record<Role, Record<Feature, boolean>>;
 }
@@ -73,5 +80,30 @@ export interface DB {
   categories: Category[];
   products: Product[];
   transactions: Transaction[];
+  employees: Employee[];
   settings: Settings;
 }
+
+// ─── Employees ─────────────────────────────────────────────────────────
+export type EmployeeStatus = "Active" | "On Leave" | "Inactive";
+export type EmployeeRole =
+  | "Admin" | "Manager" | "Inventory Staff"
+  | "Warehouse Staff" | "Accountant" | "Other";
+
+export type Employee = {
+  id: string;
+  employeeCode: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string;
+  department: string;
+  jobTitle: string;
+  role: EmployeeRole;
+  status: EmployeeStatus;
+  hireDate: string;
+  salary: number;
+  createdAt?: string;
+};
+
+export type EmployeeFormData = Omit<Employee, "id" | "createdAt">;

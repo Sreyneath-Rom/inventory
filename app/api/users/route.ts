@@ -1,14 +1,19 @@
 import { NextResponse } from "next/server";
+import { requireRole, requireUser } from "@/lib/auth";
 import { mutate, readDb } from "@/lib/server/db";
 import { uid } from "@/lib/utils";
 import { ROLES, type AppUser, type Role } from "@/lib/types";
 
 
 export async function GET() {
+  const auth = await requireUser();
+  if (!auth.user) return auth.response;
   return NextResponse.json((await readDb()).settings.users);
 }
 
 export async function POST(req: Request) {
+  const auth = await requireRole("Admin");
+  if (!auth.user) return auth.response;
   const body = await req.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
 

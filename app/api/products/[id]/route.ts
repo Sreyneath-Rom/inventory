@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
+import { requireUser } from "@/lib/auth";
 import { mutate, readDb, deleteProductRow } from "@/lib/server/db";
 import type { Product } from "@/lib/types";
 
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(_req: Request, ctx: Ctx) {
+  const auth = await requireUser();
+  if (!auth.user) return auth.response;
   const { id } = await ctx.params;
   const p = (await readDb()).products.find((x) => x.id === id);
   return p
@@ -13,6 +16,8 @@ export async function GET(_req: Request, ctx: Ctx) {
 }
 
 export async function PUT(req: Request, ctx: Ctx) {
+  const auth = await requireUser();
+  if (!auth.user) return auth.response;
   const { id } = await ctx.params;
   let body: Partial<Product>;
   try {
@@ -40,6 +45,10 @@ export async function PUT(req: Request, ctx: Ctx) {
     );
   }
 
+  if (body.categoryId && !db.categories.some((c) => c.id === body.categoryId)) {
+    return NextResponse.json({ error: "Category not found." }, { status: 422 });
+  }
+
   const updated: Product = {
     ...existing,
     sku,
@@ -57,7 +66,7 @@ export async function PUT(req: Request, ctx: Ctx) {
       body.threshold !== undefined
         ? Math.max(0, Math.floor(Number(body.threshold) || 0))
         : existing.threshold,
-    emoji: body.emoji ?? existing.emoji,
+    image: body.image ?? existing.image,
   };
 
   await mutate((d) => {
@@ -71,10 +80,18 @@ export async function PUT(req: Request, ctx: Ctx) {
 export const PATCH = PUT;
 
 export async function DELETE(_req: Request, ctx: Ctx) {
+  const auth = await requireUser();
+  if (!auth.user) return auth.response;
   const { id } = await ctx.params;
   const db = await readDb();
   if (!db.products.some((p) => p.id === id)) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  if (db.transactions.some((t) => t.productId === id)) {
+    return NextResponse.json(
+      { error: "This product has transaction history and cannot be deleted." },
+      { status: 409 }
+    );
   }
   await deleteProductRow(id);
   return new NextResponse(null, { status: 204 });
