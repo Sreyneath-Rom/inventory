@@ -1,23 +1,24 @@
+// app/api/employees/route.ts
 import { NextResponse } from "next/server";
-import { requireUser } from "@/lib/auth";
-import { createEmployeeRow, EmployeeError, readDb } from "@/lib/server/db";
+import { requireFeature } from "@/lib/auth";
+import { createEmployeeRow, readDb } from "@/lib/server/db";
+import { toErrorResponse } from "@/lib/server/errors";
 import { normalizeEmployee, validateEmployeeFields } from "@/lib/employees";
 import type { EmployeeFormData } from "@/lib/types";
 
-export const dynamic = "force-dynamic";
-
+/** Employees hold PII (salary, phone) — feature-gated. */
 export async function GET() {
-  const auth = await requireUser();
+  const auth = await requireFeature("employees");
   if (!auth.user) return auth.response;
   try {
     return NextResponse.json((await readDb()).employees);
   } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : "Server error" }, { status: 500 });
+    return toErrorResponse(e);
   }
 }
 
 export async function POST(req: Request) {
-  const auth = await requireUser();
+  const auth = await requireFeature("employees");
   if (!auth.user) return auth.response;
 
   let body: EmployeeFormData;
@@ -34,7 +35,6 @@ export async function POST(req: Request) {
   try {
     return NextResponse.json(await createEmployeeRow(data), { status: 201 });
   } catch (e) {
-    const status = e instanceof EmployeeError ? e.status : 500;
-    return NextResponse.json({ error: e instanceof Error ? e.message : "Server error" }, { status });
+    return toErrorResponse(e);
   }
 }

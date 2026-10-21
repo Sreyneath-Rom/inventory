@@ -1,23 +1,30 @@
+// app/api/users/route.ts
 import { NextResponse } from "next/server";
-import { requireRole, requireUser } from "@/lib/auth";
-import { mutate, readDb } from "@/lib/server/db";
-import { createServerSupabase } from "@/lib/supabase/server";
+import { requireFeature } from "@/lib/auth";
+import { appUserEmailExists, insertAppUser, readDb } from "@/lib/server/db";
+import { toErrorResponse } from "@/lib/server/errors";
+import { createAdminSupabase } from "@/lib/supabase/admin";
 import { ROLES, type AppUser, type Role } from "@/lib/types";
 
-export const dynamic = "force-dynamic";
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function str(v: unknown): string {
   return typeof v === "string" ? v.trim() : "";
 }
 
+/** Admin only — exposes every account's email. */
 export async function GET() {
-  const auth = await requireUser();
+  const auth = await requireFeature("settings");
   if (!auth.user) return auth.response;
-  return NextResponse.json((await readDb()).settings.users);
+  try {
+    return NextResponse.json((await readDb()).settings.users);
+  } catch (e) {
+    return toErrorResponse(e);
+  }
 }
 
 export async function POST(req: Request) {
-  const auth = await requireRole("Admin");
+  const auth = await requireFeature("settings");
   if (!auth.user) return auth.response;
 
   const body = await req.json().catch(() => null);
@@ -33,7 +40,7 @@ export async function POST(req: Request) {
   if (!name || !email) {
     return NextResponse.json({ error: "Name and email are required." }, { status: 422 });
   }
-  if (!email.includes("@")) {
+  if (!EMAIL.test(email)) {
     return NextResponse.json({ error: "Invalid email." }, { status: 422 });
   }
   if (password.length < 8) {
@@ -46,49 +53,41 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid role." }, { status: 422 });
   }
 
-  const db = await readDb();
-  if (db.settings.users.some((u) => u.email.toLowerCase() === email)) {
-    return NextResponse.json({ error: "That email already exists." }, { status: 409 });
+  try {
+    if (await appUserEmailExists(email)) {
+      return NextResponse.json({ error: "That email already exists." }, { status: 409 });
+    }
+  } catch (e) {
+    return toErrorResponse(e);
   }
 
-  // 1) Create the Supabase auth user — without this they can't log in.
-  const admin = createServerSupabase();
-  const { data: authUser, error: createErr } = await admin.auth.admin.createUser({
+  // 1) Create the auth user — without this they can't log in.
+  const admin = createAdminSupabase();
+  const { data: created, error: createErr } = await admin.auth.admin.createUser({
     email,
     password,
     email_confirm: true,
     user_metadata: { name },
   });
-  if (createErr) {
-    return NextResponse.json({ error: createErr.message }, { status: 400 });
-  }
-
-  // 2) Insert into app_users.
-  const { error: appUserErr } = await admin.from("app_users").insert({
-    id: authUser.user.id,
-    name,
-    email,
-    role,
-  });
-  if (appUserErr) {
-    await admin.auth.admin.deleteUser(authUser.user.id);
-    return NextResponse.json({ error: appUserErr.message }, { status: 500 });
-  }
-
-  // 3) Mirror into settings.users so existing GET + UI keep working.
-  const user: AppUser = { id: authUser.user.id, name, email, role };
-  try {
-    await mutate((d) => {
-      if (!d.settings.users.some((u) => u.id === user.id)) d.settings.users.push(user);
-    });
-  } catch (e) {
-    await admin.from("app_users").delete().eq("id", authUser.user.id);
-    await admin.auth.admin.deleteUser(authUser.user.id);
+  if (createErr || !created?.user) {
     return NextResponse.json(
-      { error: e instanceof Error ? e.message : "Could not persist user." },
-      { status: 500 },
+      { error: createErr?.message ?? "Could not create user." },
+      { status: 400 },
     );
   }
+  const userId = created.user.id;
 
-  return NextResponse.json(user, { status: 201 });
+  // 2) Insert into app_users (readDb reads from there directly).
+  const user: AppUser = { id: userId, name, email, role };
+  try {
+    return NextResponse.json(await insertAppUser(user), { status: 201 });
+  } catch (e) {
+    const { error: delErr } = await admin.auth.admin.deleteUser(userId);
+    if (delErr) {
+      console.error(
+        `[users] ORPHANED AUTH USER id=${userId} email=${email} — deleteUser failed: ${delErr.message}`,
+      );
+    }
+    return toErrorResponse(e);
+  }
 }

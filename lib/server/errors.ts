@@ -1,4 +1,9 @@
 // lib/server/errors.ts
+/**
+ * Typed error for HTTP routes. `toErrorResponse` translates it (and anything
+ * else) into a JSON `Response` with the right status code, so routes can
+ * `try { … } catch (e) { return toErrorResponse(e); }` uniformly.
+ */
 export class HttpError extends Error {
   constructor(public status: number, message: string) {
     super(message);

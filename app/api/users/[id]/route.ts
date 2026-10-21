@@ -1,9 +1,12 @@
+// app/api/users/[id]/route.ts
 import { NextResponse } from "next/server";
-import { requireRole, requireUser } from "@/lib/auth";
-import { mutate, readDb } from "@/lib/server/db";
-import { createServerSupabase } from "@/lib/supabase/server";
+import { requireFeature } from "@/lib/auth";
+import {
+  appUserEmailExists, deleteAppUser, getAppUserById, updateAppUser,
+} from "@/lib/server/db";
 import { HttpError, toErrorResponse } from "@/lib/server/errors";
-import { ROLES, type Role } from "@/lib/types";
+import { createAdminSupabase } from "@/lib/supabase/admin";
+import { ROLES, type AppUser, type Role } from "@/lib/types";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -11,22 +14,27 @@ function str(v: unknown): string | undefined {
   return typeof v === "string" ? v.trim() : undefined;
 }
 
-export const dynamic = "force-dynamic";
-
 export async function GET(_req: Request, ctx: Ctx) {
-  const auth = await requireUser();
+  const auth = await requireFeature("settings");
   if (!auth.user) return auth.response;
+
   const { id } = await ctx.params;
   if (!id) return NextResponse.json({ error: "Invalid id." }, { status: 400 });
-  const user = (await readDb()).settings.users.find((u) => u.id === id);
-  return user
-    ? NextResponse.json(user)
-    : NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  try {
+    const user = await getAppUserById(id);
+    return user
+      ? NextResponse.json(user)
+      : NextResponse.json({ error: "Not found" }, { status: 404 });
+  } catch (e) {
+    return toErrorResponse(e);
+  }
 }
 
 export async function PUT(req: Request, ctx: Ctx) {
-  const auth = await requireRole("Admin");
+  const auth = await requireFeature("settings");
   if (!auth.user) return auth.response;
+
   const { id } = await ctx.params;
   if (!id) return NextResponse.json({ error: "Invalid id." }, { status: 400 });
 
@@ -37,86 +45,75 @@ export async function PUT(req: Request, ctx: Ctx) {
 
   const rawName = str(body.name);
   const rawEmail = str(body.email)?.toLowerCase();
-  const rawRole = body.role;
+  const rawRole = body.role as Role | undefined;
 
   if (rawName === "") {
     return NextResponse.json({ error: "Name cannot be empty." }, { status: 422 });
   }
-  if (rawEmail !== undefined && (!rawEmail || !rawEmail.includes("@"))) {
+  if (rawEmail !== undefined && !rawEmail.includes("@")) {
     return NextResponse.json({ error: "Invalid email." }, { status: 422 });
   }
-  if (rawRole !== undefined && !ROLES.includes(rawRole as Role)) {
+  if (rawRole !== undefined && !ROLES.includes(rawRole)) {
     return NextResponse.json({ error: "Invalid role." }, { status: 422 });
   }
 
   try {
-    const updated = await mutate((d) => {
-      const existing = d.settings.users.find((u) => u.id === id);
-      if (!existing) throw new HttpError(404, "Not found");
+    const existing = await getAppUserById(id);
+    if (!existing) throw new HttpError(404, "Not found");
 
-      const nextName = rawName ?? existing.name;
-      const nextEmail = rawEmail ?? existing.email;
-      const nextRole = (rawRole as Role | undefined) ?? existing.role;
+    const nextName = rawName ?? existing.name;
+    const nextEmail = rawEmail ?? existing.email;
+    const nextRole = rawRole ?? existing.role;
 
-      if (
-        d.settings.users.some(
-          (u) => u.id !== id && u.email.toLowerCase() === nextEmail,
-        )
-      ) {
-        throw new HttpError(409, "That email already exists.");
-      }
-      if (existing.role === "Admin" && nextRole !== "Admin") {
-        const admins = d.settings.users.filter((u) => u.role === "Admin").length;
-        if (admins <= 1) throw new HttpError(409, "At least one Admin is required.");
-      }
+    if (nextEmail !== existing.email && (await appUserEmailExists(nextEmail, id))) {
+      throw new HttpError(409, "That email already exists.");
+    }
 
-      existing.name = nextName;
-      existing.email = nextEmail;
-      existing.role = nextRole;
-      return { ...existing };
-    });
+    const updated: AppUser = {
+      id: existing.id,
+      name: nextName,
+      email: nextEmail,
+      role: nextRole,
+    };
+    const saved = await updateAppUser(updated);
 
-    // Best-effort mirror into app_users. settings.users stays authoritative.
-    const admin = createServerSupabase();
-    const { error: syncErr } = await admin
-      .from("app_users")
-      .update({ name: updated.name, email: updated.email, role: updated.role })
-      .eq("id", id);
-    if (syncErr) console.error("[users] app_users sync failed:", syncErr);
+    // Best-effort: keep Supabase auth in sync so email/name changes don't
+    // lock the user out on next login.
+    if (nextEmail !== existing.email || nextName !== existing.name) {
+      const admin = createAdminSupabase();
+      const { error: authErr } = await admin.auth.admin.updateUserById(id, {
+        email: nextEmail,
+        user_metadata: { name: nextName },
+      });
+      if (authErr) console.error(`[users] auth sync failed for id=${id}:`, authErr.message);
+    }
 
-    return NextResponse.json(updated);
+    return NextResponse.json(saved);
   } catch (e) {
     return toErrorResponse(e);
   }
 }
 
 export async function DELETE(_req: Request, ctx: Ctx) {
-  const auth = await requireRole("Admin");
+  const auth = await requireFeature("settings");
   if (!auth.user) return auth.response;
+
   const { id } = await ctx.params;
   if (!id) return NextResponse.json({ error: "Invalid id." }, { status: 400 });
 
   try {
-    await mutate((d) => {
-      const target = d.settings.users.find((u) => u.id === id);
-      if (!target) throw new HttpError(404, "Not found");
-      if (target.role === "Admin") {
-        const admins = d.settings.users.filter((u) => u.role === "Admin").length;
-        if (admins <= 1) throw new HttpError(409, "At least one Admin is required.");
-      }
-      d.settings.users = d.settings.users.filter((u) => u.id !== id);
-    });
+    await deleteAppUser(id);
   } catch (e) {
     return toErrorResponse(e);
   }
 
-  // Tear down auth + app_users. If these fail the account stays usable —
-  // log loudly so the operator can clean up out-of-band.
-  const admin = createServerSupabase();
-  const { error: appErr } = await admin.from("app_users").delete().eq("id", id);
-  if (appErr) console.error("[users] app_users delete failed:", appErr);
+  // Best-effort auth teardown. If this fails the app_users row is gone
+  // but the auth user persists — they'll 403 on every route.
+  const admin = createAdminSupabase();
   const { error: authErr } = await admin.auth.admin.deleteUser(id);
-  if (authErr) console.error("[users] auth delete failed:", authErr);
+  if (authErr) {
+    console.error(`[users] auth delete failed for id=${id}: ${authErr.message}`);
+  }
 
   return new NextResponse(null, { status: 204 });
 }

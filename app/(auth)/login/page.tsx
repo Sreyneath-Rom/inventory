@@ -1,3 +1,4 @@
+// app/(auth)/login/page.tsx
 "use client";
 import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";

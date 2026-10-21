@@ -1,30 +1,28 @@
+// app/api/settings/route.ts
 import { NextResponse } from "next/server";
-import { requireRole, requireUser } from "@/lib/auth";
-import { mutate, readDb } from "@/lib/server/db";
-import { FEATURES, ROLES, type Feature, type Role } from "@/lib/types";
-
-export const dynamic = "force-dynamic";
+import { requireFeature, requireUser } from "@/lib/auth";
+import { getSettings, saveSettings } from "@/lib/server/db";
+import { toErrorResponse } from "@/lib/server/errors";
+import { FEATURES, ROLES, type Feature, type Role, type Settings } from "@/lib/types";
 
 export async function GET() {
   const auth = await requireUser();
   if (!auth.user) return auth.response;
-  return NextResponse.json((await readDb()).settings);
+  try {
+    return NextResponse.json(await getSettings());
+  } catch (e) {
+    return toErrorResponse(e);
+  }
 }
 
 /**
- * Admin only. Whitelisted fields only — `users` is managed via /api/users.
- *
- * `currentRole` is intentionally NOT writable here. It's a global settings
- * field; letting any Admin PATCH it is an authz bypass (they'd change the
- * effective role for every user, not just themselves). If you need a
- * "preview as role" feature, keep it client-side (localStorage/session) or
- * move it to the per-user record, not global settings.
- *
- * The Admin permission row can never be switched off.
- * Single permission toggle: { role: "Manager", feature: "reports", value: true }
+ * Admin-only (via the `settings` feature — Admin is always on).
+ * Whitelisted fields only. `users` is managed via /api/users.
+ * `currentRole` is per-user display state, not a global setting, so it's
+ * not writable here.
  */
-export async function PATCH(req: Request) {
-  const auth = await requireRole("Admin");
+async function patchSettings(req: Request) {
+  const auth = await requireFeature("settings");
   if (!auth.user) return auth.response;
 
   const body = await req.json().catch(() => null);
@@ -54,27 +52,31 @@ export async function PATCH(req: Request) {
   const toggling = body.role !== undefined || body.feature !== undefined;
   if (
     toggling &&
-    (!ROLES.includes(body.role) || !FEATURES.some((f) => f.key === body.feature))
+    (!ROLES.includes(body.role as Role) || !FEATURES.some((f) => f.key === body.feature))
   ) {
     return NextResponse.json({ error: "Invalid role or feature." }, { status: 422 });
   }
 
-  const updated = await mutate((d) => {
-    const s = d.settings;
-    if (companyName) s.companyName = companyName;
-    if (adminName) s.adminName = adminName;
-    if (currency) s.currency = currency;
+  try {
+    const current = await getSettings();
+    const next: Settings = { ...current };
+
+    if (companyName) next.companyName = companyName;
+    if (adminName) next.adminName = adminName;
+    if (currency) next.currency = currency;
     if (body.defaultThreshold !== undefined) {
-      s.defaultThreshold = Math.max(0, Math.floor(Number(body.defaultThreshold) || 0));
+      next.defaultThreshold = Math.max(0, Math.floor(Number(body.defaultThreshold) || 0));
     }
     if (toggling && body.role !== "Admin") {
-      s.permissions[body.role as Role][body.feature as Feature] = !!body.value;
+      next.permissions[body.role as Role][body.feature as Feature] = !!body.value;
     }
-    return s;
-  });
 
-  return NextResponse.json(updated);
+    return NextResponse.json(await saveSettings(next));
+  } catch (e) {
+    return toErrorResponse(e);
+  }
 }
 
+export const PATCH = patchSettings;
 /** PUT is accepted for compatibility but follows the same rules as PATCH. */
-export const PUT = PATCH;
+export const PUT = patchSettings;

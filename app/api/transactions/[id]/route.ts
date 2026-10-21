@@ -1,86 +1,52 @@
+// app/api/transactions/[id]/route.ts
 import { NextResponse } from "next/server";
-import { requireUser } from "@/lib/auth";
-import { readDb, deleteTransactionRow } from "@/lib/server/db";
-import { createServerSupabase } from "@/lib/supabase/server";
+import { requireFeature, requireUser } from "@/lib/auth";
+import { deleteTransactionRow, getTransactionById } from "@/lib/server/db";
+import { toErrorResponse } from "@/lib/server/errors";
 
 type Ctx = { params: Promise<{ id: string }> };
-
-export const dynamic = "force-dynamic";
 
 export async function GET(_req: Request, ctx: Ctx) {
   const auth = await requireUser();
   if (!auth.user) return auth.response;
+
   const { id } = await ctx.params;
   if (!id) return NextResponse.json({ error: "Invalid id." }, { status: 400 });
-  const tx = (await readDb()).transactions.find((t) => t.id === id);
-  return tx
-    ? NextResponse.json(tx)
-    : NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  try {
+    const tx = await getTransactionById(id);
+    return tx
+      ? NextResponse.json(tx)
+      : NextResponse.json({ error: "Not found" }, { status: 404 });
+  } catch (e) {
+    return toErrorResponse(e);
+  }
 }
 
 /**
- * Deleting a transaction reverses its stock impact. If the reversal would
- * push a product below zero, the request is rejected.
+ * Deleting a transaction reverses its stock. `deleteTransactionRow` calls
+ * the atomic `delete_transaction(p_id)` RPC (stock reversal + delete in a
+ * single PG transaction). Do NOT reverse stock here first — the RPC does
+ * it, and reversing twice would corrupt inventory.
  *
- * Order of operations:
- *   1. Reverse stock (Supabase)   — saveable rollback target
- *   2. Delete the transaction     — if this fails, undo step 1
- *
- * For true atomicity across both writes, replace this with a single RPC,
- * e.g. `reverse_transaction(p_tx_id)` that does both in one PG transaction.
+ * Intentionally no PUT/PATCH: editing a transaction means reversing the
+ * old stock impact and applying a new one, which is easy to get wrong.
+ * Delete + recreate is the safe path.
  */
 export async function DELETE(_req: Request, ctx: Ctx) {
-  const auth = await requireUser();
+  const auth = await requireFeature("stockIn", "stockOut");
   if (!auth.user) return auth.response;
+
   const { id } = await ctx.params;
   if (!id) return NextResponse.json({ error: "Invalid id." }, { status: 400 });
 
-  const db = await readDb();
-  const tx = db.transactions.find((t) => t.id === id);
-  if (!tx) return NextResponse.json({ error: "Not found" }, { status: 404 });
-
-  const p = db.products.find((x) => x.id === tx.productId);
-  const delta = tx.type === "IN" ? -tx.qty : tx.qty;
-  const newStock = p ? p.stock + delta : null;
-
-  if (p && newStock !== null && newStock < 0) {
-    return NextResponse.json(
-      { error: "Cannot reverse: stock would go negative." },
-      { status: 409 },
-    );
-  }
-
-  const sb = createServerSupabase();
-
-  // 1. Reverse stock first. This is the operation we can roll back cheaply.
-  if (p && newStock !== null) {
-    const { error: stockErr } = await sb
-      .from("products")
-      .update({ stock: newStock })
-      .eq("id", tx.productId);
-    if (stockErr) {
-      return NextResponse.json({ error: stockErr.message }, { status: 500 });
-    }
-  }
-
-  // 2. Delete the transaction. If this fails, restore stock.
   try {
-    await deleteTransactionRow(id);
-  } catch (e) {
-    if (p && newStock !== null) {
-      const { error: rollbackErr } = await sb
-        .from("products")
-        .update({ stock: p.stock })
-        .eq("id", tx.productId);
-      if (rollbackErr) {
-        console.error("[transactions] stock rollback failed:", rollbackErr);
-      }
-    }
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "Delete failed." },
-      { status: 500 },
-    );
-  }
+    const exists = await getTransactionById(id);
+    if (!exists) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  return new NextResponse(null, { status: 204 });
+    await deleteTransactionRow(id);
+    return new NextResponse(null, { status: 204 });
+  } catch (e) {
+    return toErrorResponse(e);
+  }
 }
