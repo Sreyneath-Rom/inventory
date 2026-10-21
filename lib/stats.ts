@@ -1,5 +1,6 @@
+// lib/stats.ts
 import type { Product, Transaction, TxType } from "./types";
-import { addDays, dayKey, endOfDay, startOfDay } from "./utils";
+import { addDays, dayKey, endOfDay, parseLocal, startOfDay } from "./utils";
 
 export interface Point { label: string; in: number; out: number; }
 
@@ -15,7 +16,7 @@ export function rangeSeries(tx: Transaction[], from: Date, to: Date): Point[] {
     out.push(p);
   }
   tx.forEach((t) => {
-    const p = map.get(dayKey(t.date));
+    const p = map.get(dayKey(parseLocal(t.date)));
     if (p) t.type === "IN" ? (p.in += t.qty) : (p.out += t.qty);
   });
   return out;
@@ -33,7 +34,7 @@ export function periodTotals(tx: Transaction[], type: TxType, days: number) {
   let cur = 0, prev = 0;
   tx.forEach((t) => {
     if (t.type !== type) return;
-    const d = new Date(t.date);
+    const d = parseLocal(t.date);
     if (d >= curFrom) cur += t.qty;
     else if (d >= prevFrom) prev += t.qty;
   });
@@ -46,7 +47,7 @@ export function topProducts(
   const from = startOfDay(addDays(new Date(), -(days - 1)));
   const sums = new Map<string, number>();
   tx.forEach((t) => {
-    if (t.type === "OUT" && new Date(t.date) >= from)
+    if (t.type === "OUT" && parseLocal(t.date) >= from)
       sums.set(t.productId, (sums.get(t.productId) ?? 0) + t.qty);
   });
   return [...sums.entries()]

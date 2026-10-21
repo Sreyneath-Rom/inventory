@@ -1,4 +1,4 @@
-// ─── Feature / role / tx-type ──────────────────────────────────────────
+// lib/types.ts
 export type Feature =
   | "dashboard" | "products" | "categories" | "stockIn"
   | "stockOut" | "employees" | "reports" | "settings";
@@ -18,7 +18,6 @@ export const FEATURES: { key: Feature; label: string }[] = [
   { key: "settings",   label: "Settings"   },
 ];
 
-// ─── Domain ────────────────────────────────────────────────────────────
 export interface Category {
   id: string;
   name: string;
@@ -50,7 +49,7 @@ export interface Transaction {
   unitPrice: number;
   party?: string;
   note?: string;
-  date: string;         // ISO
+  date: string;          // ISO or YYYY-MM-DD
   createdAt?: string;
 }
 
@@ -62,16 +61,13 @@ export interface AppUser {
   createdAt?: string;
 }
 
-/**
- * NOTE: `users` is NOT stored on the settings row — it lives in
- * `public.app_users`. `GET /api/db` joins it in, `PUT /api/db` fans it back out.
- */
+/** `users` lives in `app_users`, not on the settings row. */
 export interface Settings {
   companyName: string;
   adminName: string;
   currency: string;
   defaultThreshold: number;
-  currentRole: Role;    // SQL column: active_role
+  currentRole: Role;
   users: AppUser[];
   permissions: Record<Role, Record<Feature, boolean>>;
 }
@@ -84,7 +80,6 @@ export interface DB {
   settings: Settings;
 }
 
-// ─── Employees ─────────────────────────────────────────────────────────
 export type EmployeeStatus = "Active" | "On Leave" | "Inactive";
 export type EmployeeRole =
   | "Admin" | "Manager" | "Inventory Staff"

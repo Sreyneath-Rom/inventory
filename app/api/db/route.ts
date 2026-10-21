@@ -1,24 +1,22 @@
+// app/api/db/route.ts
 import { NextResponse } from "next/server";
-import { createServerSupabase } from "@/lib/supabase/server";
 import { requireRole } from "@/lib/auth";
-import { readDb, writeDb } from "@/lib/db-map";
+import { readDb, replaceDb } from "@/lib/server/db";
+import { isHttpError } from "@/lib/server/errors";
+import { createAdminSupabase } from "@/lib/supabase/admin";
 import type { DB, Role } from "@/lib/types";
 
-export const dynamic = "force-dynamic";
-
 export async function GET() {
-  // Previously: any authenticated user. A full DB dump exposes every
-  // user's email and every transaction. Admin only.
   const auth = await requireRole("Admin");
   if (!auth.user) return auth.response;
 
-  const sb = createServerSupabase();
   try {
-    return NextResponse.json(await readDb(sb));
+    return NextResponse.json(await readDb());
   } catch (e) {
+    const status = isHttpError(e) ? e.status : 500;
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "Read failed" },
-      { status: 500 },
+      { status },
     );
   }
 }
@@ -26,7 +24,6 @@ export async function GET() {
 export async function PUT(req: Request) {
   const auth = await requireRole("Admin");
   if (!auth.user) return auth.response;
-  const sb = createServerSupabase();
 
   let body: DB;
   try {
@@ -39,33 +36,33 @@ export async function PUT(req: Request) {
   if (problem) return NextResponse.json({ error: problem }, { status: 422 });
   if (!Array.isArray(body.employees)) body.employees = [];
 
+  // Best-effort snapshot before wiping.
   try {
-    // Snapshot before wiping. Best-effort: if the bucket doesn't exist
-    // yet, log and proceed rather than refusing the PUT (the previous
-    // behaviour was no backup at all).
-    try {
-      const backup = await readDb(sb);
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const { error: bkErr } = await sb.storage
-        .from("db-backups")
-        .upload(`db-${stamp}.json`, JSON.stringify(backup), {
-          contentType: "application/json",
-          upsert: false,
-        });
-      if (bkErr) console.warn("[db] backup upload failed:", bkErr.message);
-    } catch (bkErr) {
-      console.warn("[db] backup read/upload failed:", bkErr);
-    }
+    const sb = createAdminSupabase();
+    const backup = await readDb();
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const { error: bkErr } = await sb.storage
+      .from("db-backups")
+      .upload(`db-${stamp}.json`, JSON.stringify(backup), {
+        contentType: "application/json",
+        upsert: false,
+      });
+    if (bkErr) console.warn("[db] backup upload failed:", bkErr.message);
+  } catch (bkErr) {
+    console.warn("[db] backup read/upload failed:", bkErr);
+  }
 
-    await writeDb(sb, body);
+  try {
+    await replaceDb(body);
     console.info(
-      `[db] PUT by user=${auth.user.id} role=${auth.user.role ?? "?"} at ${new Date().toISOString()}`,
+      `[db] PUT by user=${auth.user.id} role=${auth.role} at ${new Date().toISOString()}`,
     );
-    return NextResponse.json(await readDb(sb));
+    return NextResponse.json(await readDb());
   } catch (e) {
+    const status = isHttpError(e) ? e.status : 500;
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "Write failed" },
-      { status: 500 },
+      { status },
     );
   }
 }
@@ -77,15 +74,15 @@ function validateDbPayload(body: unknown): string | null {
   for (const key of ["categories", "products", "transactions"]) {
     if (!Array.isArray(b[key])) return `"${key}" must be an array.`;
   }
-  if (!b.settings || typeof b.settings !== "object") return `"settings" must be an object.`;
+  if (!b.settings || typeof b.settings !== "object")
+    return `"settings" must be an object.`;
   const s = b.settings as Record<string, unknown>;
   if (!Array.isArray(s.users)) return `"settings.users" must be an array.`;
 
   const checkIds = (arr: unknown[], label: string) => {
     for (const row of arr) {
-      if (!row || typeof row !== "object" || typeof (row as { id?: unknown }).id !== "string") {
+      if (!row || typeof row !== "object" || typeof (row as { id?: unknown }).id !== "string")
         return `Each entry in "${label}" must have a string id.`;
-      }
     }
     return null;
   };
@@ -97,10 +94,8 @@ function validateDbPayload(body: unknown): string | null {
   const usersErr = checkIds(s.users as unknown[], "settings.users");
   if (usersErr) return usersErr;
 
-  // A full-DB PUT could otherwise wipe every Admin and lock everyone out.
-  if (!(s.users as { role?: Role }[]).some((u) => u.role === "Admin")) {
+  if (!(s.users as { role?: Role }[]).some((u) => u.role === "Admin"))
     return "At least one Admin must remain in settings.users.";
-  }
 
   return null;
 }

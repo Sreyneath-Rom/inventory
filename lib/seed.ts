@@ -1,3 +1,4 @@
+// lib/seed.ts
 import type { DB, Feature, Role } from "./types";
 import { FEATURES } from "./types";
 
@@ -12,11 +13,6 @@ export const defaultPermissions: Record<Role, Record<Feature, boolean>> = {
   Staff:   perm(["dashboard", "products", "stockIn", "stockOut"]),
 };
 
-/**
- * Starting state for a fresh install.
- * NOTE: `settings.users` is written to `public.app_users` by PUT /api/db —
- * it is not stored on the settings row.
- */
 export function buildSeed(): DB {
   return {
     categories: [],

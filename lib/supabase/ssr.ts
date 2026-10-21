@@ -1,3 +1,4 @@
+// lib/supabase/ssr.ts
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
@@ -15,13 +16,13 @@ export async function createSsrSupabase() {
         setAll(cookiesToSet) {
           try {
             cookiesToSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, options)
+              cookieStore.set(name, value, options),
             );
           } catch {
             // Called from a Server Component — safe to ignore.
           }
         },
       },
-    }
+    },
   );
 }

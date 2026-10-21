@@ -1,3 +1,4 @@
+// lib/store.tsx
 "use client";
 import {
   createContext, useCallback, useContext, useEffect, useRef, useState,
@@ -28,6 +29,8 @@ export interface MoveInput {
 interface Store {
   db: DB;
   can: (f: Feature) => boolean;
+  lastError: string | null;
+  clearError: () => void;
 
   addCategory: (c: Omit<Category, "id">) => Result;
   updateCategory: (c: Category) => void;
@@ -79,8 +82,11 @@ export function RequireDb({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+const ADMIN_ONLY_MSG = "You do not have permission for this action.";
+
 export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [db, setDbState] = useState<DB | null>(null);
+  const [lastError, setLastError] = useState<string | null>(null);
   const ref = useRef<DB | null>(null);
 
   /* Hydration */
@@ -98,9 +104,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           const raw = localStorage.getItem(KEY);
           cached = raw ? normalize(JSON.parse(raw) as DB) : null;
         } catch { cached = null; }
-        // Do NOT push this back with api.replaceDb(): a failed load (401, 500,
-        // network blip) would wipe every table on the server. Run read-only
-        // from cache/seed; later writes sync normally or trigger a resync.
+        // Never replaceDb() here — a failed load must not wipe the server.
         console.warn("Could not load DB from server:", res.error);
         initial = cached ?? buildSeed();
       }
@@ -110,7 +114,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; };
   }, []);
 
-  /* Persist */
+  /* Persist cache */
   useEffect(() => {
     if (db) {
       try { localStorage.setItem(KEY, JSON.stringify(db)); } catch { /* quota */ }
@@ -118,22 +122,40 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [db]);
 
   const commit = useCallback((next: DB) => { ref.current = next; setDbState(next); }, []);
+
   const patch = useCallback((fn: (d: DB) => DB) => {
     const cur = ref.current;
     if (cur) commit(fn(cur));
   }, [commit]);
+
   const resync = useCallback(async () => {
     const res = await api.loadDb();
     if (res.ok) commit(normalize(res.data));
   }, [commit]);
 
+  const clearError = useCallback(() => setLastError(null), []);
+
+  /** Record error + resync the local snapshot from the server. */
+  const handleFailure = useCallback((error: string) => {
+    setLastError(error);
+    void resync();
+  }, [resync]);
+
+  const canCurrent = useCallback((f: Feature): boolean => {
+    const d = ref.current;
+    if (!d) return false;
+    return d.settings.permissions[d.settings.currentRole]?.[f] ?? false;
+  }, []);
+
   const store: StoreMaybe = {
     db,
-
-    can: (f) => !!db && db.settings.permissions[db.settings.currentRole][f],
+    lastError,
+    clearError,
+    can: canCurrent,
 
     /* ── Categories ──────────────────────────────────────────────── */
     addCategory: (c) => {
+      if (!canCurrent("categories")) return { ok: false, error: ADMIN_ONLY_MSG };
       const cur = ref.current!;
       if (cur.categories.some((x) => x.name.toLowerCase() === c.name.toLowerCase())) {
         return { ok: false, error: `Category "${c.name}" already exists.` };
@@ -142,38 +164,45 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const optimistic: Category = { ...c, id: tempId };
       patch((d) => ({ ...d, categories: [...d.categories, optimistic] }));
       void api.createCategory(c).then((r) => {
-        if (!r.ok) void resync();
-        else {
-          const real = r.data;
-          patch((d) => ({
-            ...d,
-            categories: d.categories.map((x) => (x.id === tempId ? real : x)),
-          }));
-        }
+        if (!r.ok) return handleFailure(r.error);
+        const real = r.data;
+        patch((d) => ({
+          ...d,
+          categories: d.categories.map((x) => (x.id === tempId ? real : x)),
+        }));
       });
       return { ok: true };
     },
 
     updateCategory: (c) => {
+      if (!canCurrent("categories")) { setLastError(ADMIN_ONLY_MSG); return; }
       patch((d) => ({
         ...d,
         categories: d.categories.map((x) => (x.id === c.id ? c : x)),
       }));
-      void api.updateCategory(c).then((r) => { if (!r.ok) void resync(); });
+      void api.updateCategory(c).then((r) => {
+        if (!r.ok) return handleFailure(r.error);
+        patch((d) => ({
+          ...d,
+          categories: d.categories.map((x) => (x.id === r.data.id ? r.data : x)),
+        }));
+      });
     },
 
     deleteCategory: (id) => {
+      if (!canCurrent("categories")) return { ok: false, error: ADMIN_ONLY_MSG };
       const cur = ref.current!;
       if (cur.products.some((p) => p.categoryId === id)) {
         return { ok: false, error: "This category still has products. Move or delete them first." };
       }
       patch((d) => ({ ...d, categories: d.categories.filter((c) => c.id !== id) }));
-      void api.deleteCategory(id).then((r) => { if (!r.ok) void resync(); });
+      void api.deleteCategory(id).then((r) => { if (!r.ok) handleFailure(r.error); });
       return { ok: true };
     },
 
     /* ── Products ────────────────────────────────────────────────── */
     addProduct: (p) => {
+      if (!canCurrent("products")) return { ok: false, error: ADMIN_ONLY_MSG };
       const cur = ref.current!;
       if (cur.products.some((x) => x.sku.toLowerCase() === p.sku.toLowerCase())) {
         return { ok: false, error: `SKU "${p.sku}" already exists.` };
@@ -182,21 +211,21 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const optimistic: Product = { ...p, id: tempId };
       patch((d) => ({ ...d, products: [optimistic, ...d.products] }));
       void api.createProduct(p).then((r) => {
-        if (!r.ok) void resync();
-        else {
-          const real = r.data;
-          patch((d) => ({
-            ...d,
-            products: d.products.map((x) => (x.id === tempId ? real : x)),
-          }));
-        }
+        if (!r.ok) return handleFailure(r.error);
+        const real = r.data;
+        patch((d) => ({
+          ...d,
+          products: d.products.map((x) => (x.id === tempId ? real : x)),
+        }));
       });
       return { ok: true };
     },
 
     updateProduct: (p) => {
+      if (!canCurrent("products")) { setLastError(ADMIN_ONLY_MSG); return; }
       const cur = ref.current!;
       const existing = cur.products.find((x) => x.id === p.id);
+      // Stock is owned by the server; never trust the client value here.
       const merged: Product = existing ? { ...p, stock: existing.stock } : p;
 
       patch((d) => ({
@@ -210,10 +239,17 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         cost: merged.cost, price: merged.price,
         threshold: merged.threshold, image: merged.image,
       };
-      void api.updateProduct(payload).then((r) => { if (!r.ok) void resync(); });
+      void api.updateProduct(payload).then((r) => {
+        if (!r.ok) return handleFailure(r.error);
+        patch((d) => ({
+          ...d,
+          products: d.products.map((x) => (x.id === r.data.id ? r.data : x)),
+        }));
+      });
     },
 
     deleteProduct: (id) => {
+      if (!canCurrent("products")) return { ok: false, error: ADMIN_ONLY_MSG };
       const cur = ref.current!;
       if (cur.transactions.some((t) => t.productId === id)) {
         return {
@@ -222,15 +258,17 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         };
       }
       patch((d) => ({ ...d, products: d.products.filter((p) => p.id !== id) }));
-      void api.deleteProduct(id).then((r) => { if (!r.ok) void resync(); });
+      void api.deleteProduct(id).then((r) => { if (!r.ok) handleFailure(r.error); });
       return { ok: true };
     },
 
     /* ── Stock movement ──────────────────────────────────────────── */
     move: (type, i) => {
+      const perm: Feature = type === "IN" ? "stockIn" : "stockOut";
+      if (!canCurrent(perm)) return { ok: false, error: ADMIN_ONLY_MSG };
+
       const cur = ref.current!;
       const p = cur.products.find((x) => x.id === i.productId);
-
       if (!p) return { ok: false, error: "Please select a product." };
       if (!Number.isInteger(i.qty) || i.qty <= 0) {
         return { ok: false, error: "Quantity must be a whole number greater than 0." };
@@ -257,14 +295,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         date,
       };
 
-      // If the SQL trigger `trg_transactions_stock` is installed, remove the
-      // stock mutation below — the trigger handles it server-side.
       patch((d) => ({
         ...d,
         products: d.products.map((x) =>
           x.id === p.id
             ? { ...x, stock: x.stock + (type === "IN" ? i.qty : -i.qty) }
-            : x
+            : x,
         ),
         transactions: [optimistic, ...d.transactions],
       }));
@@ -273,19 +309,20 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         type, productId: i.productId, qty: i.qty,
         unitPrice: i.unitPrice, party: i.party, note: i.note, date,
       }).then((r) => {
-        if (!r.ok) void resync();
-        else {
-          const real = r.data;
-          patch((d) => ({
-            ...d,
-            transactions: d.transactions.map((t) => (t.id === tempId ? real : t)),
-          }));
-        }
+        if (!r.ok) return handleFailure(r.error);
+        const real = r.data;
+        patch((d) => ({
+          ...d,
+          transactions: d.transactions.map((t) => (t.id === tempId ? real : t)),
+        }));
       });
       return { ok: true };
     },
 
     deleteTransaction: (id) => {
+      if (!canCurrent("stockIn") && !canCurrent("stockOut")) {
+        return { ok: false, error: ADMIN_ONLY_MSG };
+      }
       const cur = ref.current!;
       const tx = cur.transactions.find((t) => t.id === id);
       if (!tx) return { ok: false, error: "Transaction not found." };
@@ -296,15 +333,15 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         if (product.stock + delta < 0) {
           return {
             ok: false,
-            error: `Cannot delete: only ${product.stock} ${product.unit} in stock, but this IN added ${tx.qty}.`,
+            error:
+              `Cannot delete: only ${product.stock} ${product.unit} in stock, ` +
+              `but this IN added ${tx.qty}.`,
           };
         }
-        // Trigger note applies here too — skip the stock delta if the SQL
-        // trigger is active.
         patch((d) => ({
           ...d,
           products: d.products.map((x) =>
-            x.id === product.id ? { ...x, stock: x.stock + delta } : x
+            x.id === product.id ? { ...x, stock: x.stock + delta } : x,
           ),
           transactions: d.transactions.filter((t) => t.id !== id),
         }));
@@ -312,18 +349,26 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         patch((d) => ({ ...d, transactions: d.transactions.filter((t) => t.id !== id) }));
       }
 
-      void api.deleteTransaction(id).then((r) => { if (!r.ok) void resync(); });
+      // The server reverses stock unconditionally via `delete_transaction`
+      // (or via a trigger). Resync on success so the local stock snapshot
+      // never drifts — including when the product lookup above missed.
+      void api.deleteTransaction(id).then((r) => {
+        if (!r.ok) return handleFailure(r.error);
+        void resync();
+      });
       return { ok: true };
     },
 
     /* ── Settings ────────────────────────────────────────────────── */
     updateSettings: (s) => {
+      if (!canCurrent("settings")) { setLastError(ADMIN_ONLY_MSG); return; }
       const cur = ref.current!;
       patch((d) => ({ ...d, settings: { ...cur.settings, ...s } }));
-      void api.patchSettings(s).then((r) => { if (!r.ok) void resync(); });
+      void api.patchSettings(s).then((r) => { if (!r.ok) handleFailure(r.error); });
     },
 
     setPermission: (r, f, v) => {
+      if (!canCurrent("settings")) { setLastError(ADMIN_ONLY_MSG); return; }
       patch((d) => ({
         ...d,
         settings: {
@@ -334,13 +379,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           },
         },
       }));
-      void api.patchSettings({ role: r, feature: f, value: v }).then((res) => {
-        if (!res.ok) void resync();
-      });
+      void api.patchSettings({ role: r, feature: f, value: v })
+        .then((res) => { if (!res.ok) handleFailure(res.error); });
     },
 
-    /* ── Users ──────────────────────────────────────────────────── */
+    /* ── Users ───────────────────────────────────────────────────── */
     addUser: (u) => {
+      if (!canCurrent("settings")) return { ok: false, error: ADMIN_ONLY_MSG };
       const cur = ref.current!;
       if (cur.settings.users.some((x) => x.email.toLowerCase() === u.email.toLowerCase())) {
         return { ok: false, error: `Email "${u.email}" is already registered.` };
@@ -352,22 +397,29 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         settings: { ...d.settings, users: [...d.settings.users, optimistic] },
       }));
       void api.createUser(u).then((r) => {
-        if (!r.ok) void resync();
-        else {
-          const real = r.data;
-          patch((d) => ({
-            ...d,
-            settings: {
-              ...d.settings,
-              users: d.settings.users.map((x) => (x.id === tempId ? real : x)),
-            },
-          }));
-        }
+        if (!r.ok) return handleFailure(r.error);
+        const real = r.data;
+        patch((d) => ({
+          ...d,
+          settings: {
+            ...d.settings,
+            users: d.settings.users.map((x) => (x.id === tempId ? real : x)),
+          },
+        }));
       });
       return { ok: true };
     },
 
     updateUser: (u) => {
+      if (!canCurrent("settings")) { setLastError(ADMIN_ONLY_MSG); return; }
+      // Guard: don't let the last Admin lose their role.
+      const cur = ref.current!;
+      const before = cur.settings.users.find((x) => x.id === u.id);
+      const adminCount = cur.settings.users.filter((x) => x.role === "Admin").length;
+      if (before?.role === "Admin" && u.role !== "Admin" && adminCount <= 1) {
+        setLastError("Cannot demote the last Admin.");
+        return;
+      }
       patch((d) => ({
         ...d,
         settings: {
@@ -375,10 +427,29 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           users: d.settings.users.map((x) => (x.id === u.id ? u : x)),
         },
       }));
-      void api.updateUser(u).then((r) => { if (!r.ok) void resync(); });
+      void api.updateUser(u).then((r) => {
+        if (!r.ok) return handleFailure(r.error);
+        patch((d) => ({
+          ...d,
+          settings: {
+            ...d.settings,
+            users: d.settings.users.map((x) => (x.id === r.data.id ? r.data : x)),
+          },
+        }));
+      });
     },
 
     removeUser: (id) => {
+      if (!canCurrent("settings")) { setLastError(ADMIN_ONLY_MSG); return; }
+      const cur = ref.current!;
+      const target = cur.settings.users.find((u) => u.id === id);
+      if (
+        target?.role === "Admin" &&
+        cur.settings.users.filter((u) => u.role === "Admin").length <= 1
+      ) {
+        setLastError("Cannot remove the last Admin.");
+        return;
+      }
       patch((d) => ({
         ...d,
         settings: {
@@ -386,17 +457,19 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           users: d.settings.users.filter((x) => x.id !== id),
         },
       }));
-      void api.deleteUser(id).then((r) => { if (!r.ok) void resync(); });
+      void api.deleteUser(id).then((r) => { if (!r.ok) handleFailure(r.error); });
     },
 
-    /* ── Employees ──────────────────────────────────────────────── */
+    /* ── Employees ───────────────────────────────────────────────── */
     addEmployee: async (e) => {
+      if (!canCurrent("employees")) return { ok: false, error: ADMIN_ONLY_MSG };
       const r = await api.createEmployee(e);
       if (!r.ok) return { ok: false, error: r.error };
       patch((d) => ({ ...d, employees: [r.data, ...d.employees] }));
       return { ok: true };
     },
     updateEmployee: async (e) => {
+      if (!canCurrent("employees")) return { ok: false, error: ADMIN_ONLY_MSG };
       const r = await api.updateEmployee(e);
       if (!r.ok) return { ok: false, error: r.error };
       patch((d) => ({
@@ -406,17 +479,19 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       return { ok: true };
     },
     deleteEmployee: async (id) => {
+      if (!canCurrent("employees")) return { ok: false, error: ADMIN_ONLY_MSG };
       const r = await api.deleteEmployee(id);
       if (!r.ok) return { ok: false, error: r.error };
       patch((d) => ({ ...d, employees: d.employees.filter((x) => x.id !== id) }));
       return { ok: true };
     },
 
-    /* ── Reset ──────────────────────────────────────────────────── */
+    /* ── Reset ───────────────────────────────────────────────────── */
     resetData: () => {
+      if (!canCurrent("settings")) { setLastError(ADMIN_ONLY_MSG); return; }
       const seed = buildSeed();
       commit(seed);
-      void api.replaceDb(seed).then((r) => { if (!r.ok) void resync(); });
+      void api.replaceDb(seed).then((r) => { if (!r.ok) handleFailure(r.error); });
     },
   };
 

@@ -1,3 +1,4 @@
+// lib/employees.ts
 import type { Employee, EmployeeFormData, EmployeeRole, EmployeeStatus } from "./types";
 
 export const EMPLOYEE_ROLES: EmployeeRole[] = [
@@ -13,6 +14,7 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function normalizeEmployee(raw: EmployeeFormData): EmployeeFormData {
   const s = (v: unknown) => String(v ?? "").trim();
+  const salaryRaw = s(raw.salary);
   return {
     employeeCode: s(raw.employeeCode).toUpperCase(),
     firstName: s(raw.firstName),
@@ -24,7 +26,8 @@ export function normalizeEmployee(raw: EmployeeFormData): EmployeeFormData {
     role: raw.role,
     status: raw.status,
     hireDate: s(raw.hireDate),
-    salary: Number(raw.salary),
+    // `Number("")` is 0 — a silent "valid" salary. Blank must be invalid.
+    salary: salaryRaw === "" ? NaN : Number(salaryRaw),
   };
 }
 
