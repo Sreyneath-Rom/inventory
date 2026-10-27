@@ -6,7 +6,6 @@ import Link from "next/link";
 import { Boxes, LogIn, Mail, Lock, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
-import { createBrowserSupabase } from "@/lib/supabase/client";
 
 function LoginForm() {
   const router = useRouter();
@@ -21,14 +20,26 @@ function LoginForm() {
     e.preventDefault();
     setErr("");
     setBusy(true);
-    const sb = createBrowserSupabase();
-    const { error } = await sb.auth.signInWithPassword({ email, password });
-    if (error) {
-      setErr(error.message);
+
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const body = await res.json().catch(() => null) as { error?: string } | null;
+      if (!res.ok) {
+        setErr(body?.error ?? "Could not sign in.");
+        setBusy(false);
+        return;
+      }
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : "Could not sign in.");
       setBusy(false);
       return;
     }
-    router.push(next);
+
+    router.push(next.startsWith("/") && !next.startsWith("//") ? next : "/");
     router.refresh();
   };
 

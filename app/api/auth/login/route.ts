@@ -1,7 +1,7 @@
 // app/api/auth/login/route.ts
 import { NextResponse } from "next/server";
 import { createSsrSupabase } from "@/lib/supabase/ssr";
-import { getAppRole } from "@/lib/auth";
+import { getAppRoleOrBootstrapFirstAdmin } from "@/lib/auth";
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -12,6 +12,12 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  *
  * Returns `{ id, email, name, role }`. Never returns the session tokens
  * (they're in the cookies).
+ *
+ * Failure cleanup: `signInWithPassword` **writes the session cookie
+ * before we know whether the user has a profile**. Every path after that
+ * call must either return success or explicitly `signOut()`. Leaving the
+ * cookie behind produces a "logged in but every route 403s" state with
+ * no obvious recovery.
  */
 export async function POST(req: Request) {
   let raw: unknown;
@@ -32,40 +38,62 @@ export async function POST(req: Request) {
     );
   }
   if (!EMAIL.test(email)) {
-    return NextResponse.json({ error: "Please enter a valid email address." }, { status: 422 });
+    return NextResponse.json(
+      { error: "Please enter a valid email address." },
+      { status: 422 },
+    );
   }
 
-  // SSR client: `signInWithPassword` triggers the `setAll` cookie handler
-  // in ssr.ts, which writes the auth cookies onto the outgoing response.
   const sb = await createSsrSupabase();
-  const { data, error } = await sb.auth.signInWithPassword({ email, password });
 
+  // Network/transport failure surfaces as a thrown error (auth failures
+  // come back in `.error` instead). 503 signals "try again" to the client.
+  let signIn: Awaited<ReturnType<typeof sb.auth.signInWithPassword>>;
+  try {
+    signIn = await sb.auth.signInWithPassword({ email, password });
+  } catch {
+    return NextResponse.json(
+      { error: "Sign-in is temporarily unavailable. Please try again." },
+      { status: 503 },
+    );
+  }
+
+  const { data, error } = signIn;
   if (error || !data.user) {
     // Deliberately vague — do not confirm whether the email exists.
     return NextResponse.json({ error: "Invalid email or password." }, { status: 401 });
   }
 
-  // The user is authenticated by Supabase, but we need an app_users row to
-  // know their role. If there isn't one, clear the session and reject —
-  // otherwise every subsequent route would 403 them with no explanation.
-  const role = await getAppRole(data.user);
-  if (!role) {
-    await sb.auth.signOut();
+  // The session cookie is now set. Every failure below MUST sign the
+  // user out, or they'll hold a live session with no role.
+  try {
+    const role = await getAppRoleOrBootstrapFirstAdmin(data.user);
+    if (!role) {
+      await sb.auth.signOut().catch(() => { /* best effort */ });
+      return NextResponse.json(
+        { error: "Your account is not set up. Ask an admin to grant access." },
+        { status: 403 },
+      );
+    }
+
+    const name =
+      (data.user.user_metadata?.name as string | undefined)?.trim() ||
+      data.user.email?.split("@")[0] ||
+      "";
+
+    return NextResponse.json({
+      id: data.user.id,
+      email: data.user.email,
+      name,
+      role,
+    });
+  } catch (e) {
+    // Role lookup blew up (RPC missing, DB unreachable, etc.). Sign out
+    // so the client isn't stuck in "authenticated but roleless" state.
+    await sb.auth.signOut().catch(() => { /* best effort */ });
     return NextResponse.json(
-      { error: "Your account is not set up. Ask an admin to grant access." },
-      { status: 403 },
+      { error: e instanceof Error ? e.message : "Login failed." },
+      { status: 500 },
     );
   }
-
-  const name =
-    (data.user.user_metadata?.name as string | undefined) ??
-    data.user.email?.split("@")[0] ??
-    "";
-
-  return NextResponse.json({
-    id: data.user.id,
-    email: data.user.email,
-    name,
-    role,
-  });
 }

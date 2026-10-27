@@ -11,6 +11,8 @@ export const defaultPermissions: Record<Role, Record<Feature, boolean>> = {
   Admin:   perm(all),
   Manager: perm(all.filter((f) => f !== "settings")),
   Staff:   perm(["dashboard", "products", "stockIn", "stockOut"]),
+  // Read-only role — dashboard, catalogue browsing, and reports.
+  Viewer:  perm(["dashboard", "products", "reports"]),
 };
 
 export function buildSeed(): DB {

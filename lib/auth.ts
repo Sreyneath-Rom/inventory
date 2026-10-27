@@ -2,8 +2,8 @@
 import { NextResponse } from "next/server";
 import { createSsrSupabase } from "./supabase/ssr";
 import { createAdminSupabase } from "./supabase/admin";
-import { HttpError } from "./server/errors";
-import { getPermissions } from "./server/db";
+import { HttpError, isHttpError } from "./server/errors";
+import { bootstrapAdminIfFirstUser, getPermissions, toAppRole } from "./server/db";
 import type { Feature, Role, Settings } from "./types";
 
 /**
@@ -25,37 +25,73 @@ export async function requireUser() {
 }
 
 /**
- * App role: `app_users` matched by auth id, then by email (case-insensitive).
- * Writes always go through `toAppUserRow`, which lower-cases email, so `eq`
- * on the lower-cased input is correct and uses the index.
+ * Reads the app role from `public.profiles` — the table named `app_users`
+ * in earlier drafts does **not** exist in schema.sql. `profiles.user_id`
+ * is a strict FK to `auth.users.id`, so a single indexed lookup is enough.
+ *
+ * `is_active = false` resolves to `null` — a deactivated profile has no app
+ * permissions (same effect as "no profile"), which keeps `requireRole` /
+ * `requireFeature` returning 403 without needing a second query.
  *
  * Throws `HttpError(500)` on a DB failure — a broken role lookup must not be
  * reported as a 403 (which would hide an infra problem as an auth problem).
  */
 export async function getAppRole(
-  user: { id: string; email?: string | null },
+  user: { id: string },
 ): Promise<Role | null> {
   const sb = createAdminSupabase();
 
-  const byId = await sb
-    .from("app_users").select("role").eq("id", user.id).maybeSingle();
-  if (byId.error) throw new HttpError(500, `Role lookup failed: ${byId.error.message}`);
-  if (byId.data) return byId.data.role as Role;
+  const { data, error } = await sb
+    .from("profiles").select("role, is_active")
+    .eq("user_id", user.id).maybeSingle();
+  if (error) throw new HttpError(500, `Role lookup failed: ${error.message}`);
+  if (!data) return null;
 
-  if (user.email) {
-    const byEmail = await sb
-      .from("app_users").select("role")
-      .eq("email", user.email.trim().toLowerCase())
-      .maybeSingle();
-    if (byEmail.error) throw new HttpError(500, `Role lookup failed: ${byEmail.error.message}`);
-    if (byEmail.data) return byEmail.data.role as Role;
+  const row = data as { role: string; is_active: boolean };
+  if (row.is_active === false) return null;
+  return toAppRole(row.role);
+}
+
+/**
+ * Resolves an existing role or bootstraps this authenticated user as the
+ * first Admin when `profiles` is empty. The DB RPC serialises concurrent
+ * attempts and refuses bootstrap once any profile exists.
+ *
+ * ⚠ The RPC must be written against `public.profiles`, not `app_users`.
+ */
+export async function getAppRoleOrBootstrapFirstAdmin(
+  user: {
+    id: string;
+    email?: string | null;
+    user_metadata?: { name?: unknown };
+  },
+): Promise<Role | null> {
+  const role = await getAppRole(user);
+  if (role) return role;
+  if (!user.email) return null;
+
+  const name =
+    (typeof user.user_metadata?.name === "string" && user.user_metadata.name.trim()) ||
+    user.email.split("@")[0];
+
+  try {
+    return await bootstrapAdminIfFirstUser({
+      id: user.id,
+      name,
+      email: user.email,
+    });
+  } catch (e) {
+    if (isHttpError(e) && e.status === 403 && e.message.includes("Signup is closed")) {
+      return null;
+    }
+    throw e;
   }
-  return null;
 }
 
 /**
  * Like `requireUser`, but also requires one of the given roles.
- * Returns 401 (no session), 403 (wrong role), or 500 (lookup failed).
+ * Returns 401 (no session), 403 (wrong role / no profile / inactive),
+ * or 500 (lookup failed).
  */
 export async function requireRole(...allowed: Role[]) {
   const auth = await requireUser();
@@ -89,14 +125,12 @@ export async function requireRole(...allowed: Role[]) {
  *
  * Status codes:
  *   - 401  no session
- *   - 403  no `app_users` row, or none of the features enabled
+ *   - 403  no active profile, or none of the features enabled
  *   - 500  DB failure while resolving role or permissions
- *          (not 403 — infra problems must not look like auth problems)
  *
- * Admin is always allowed (permissions.Admin is forced on in
- * `mergePermissions`), so the settings read is skipped for Admin.
- *
- * This is the server-authoritative counterpart to the client's `can()`.
+ * Admin is always allowed (`mergePermissions` forces Admin features on), so
+ * the settings read is skipped for Admin. Server-authoritative counterpart
+ * to the client's `can()`.
  */
 export async function requireFeature(...features: Feature[]) {
   const auth = await requireUser();

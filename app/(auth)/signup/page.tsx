@@ -6,7 +6,6 @@ import Link from "next/link";
 import { Boxes, UserPlus, Mail, Lock, User, ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
-import { createBrowserSupabase } from "@/lib/supabase/client";
 
 export default function SignupPage() {
   const router = useRouter();
@@ -32,24 +31,33 @@ export default function SignupPage() {
 
     setBusy(true);
 
-    const res = await fetch("/api/auth/register", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email, password }),
-    });
+    try {
+      const signup = await fetch("/api/auth/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email, password }),
+      });
 
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      setErr(body.error ?? "Could not create account.");
-      setBusy(false);
-      return;
-    }
+      const signupBody = await signup.json().catch(() => null) as { error?: string } | null;
+      if (!signup.ok) {
+        setErr(signupBody?.error ?? "Could not create account.");
+        setBusy(false);
+        return;
+      }
 
-    const sb = createBrowserSupabase();
-    const { error } = await sb.auth.signInWithPassword({ email, password });
-
-    if (error) {
-      setErr(error.message);
+      const login = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const loginBody = await login.json().catch(() => null) as { error?: string } | null;
+      if (!login.ok) {
+        setErr(loginBody?.error ?? "Account created, but could not sign in. Please sign in.");
+        setBusy(false);
+        return;
+      }
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : "Could not create account.");
       setBusy(false);
       return;
     }

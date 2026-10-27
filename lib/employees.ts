@@ -12,20 +12,32 @@ export const DEPARTMENTS = [
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-export function normalizeEmployee(raw: EmployeeFormData): EmployeeFormData {
+/**
+ * Accepts untrusted JSON (`unknown`) and returns a shape whose string fields
+ * are guaranteed trim'd, whose email is lowercased, and whose salary is a
+ * finite number (NaN for blank). Every value is string-coerced first —
+ * `{"name": 123}` becomes `"123"` and `{"salary": null}` becomes `NaN`
+ * rather than crashing on `.trim()`.
+ *
+ * `role`/`status` are cast after coercion; `validateEmployeeFields` rejects
+ * anything outside `EMPLOYEE_ROLES` / `EMPLOYEE_STATUSES` before the object
+ * reaches the DB, so the cast is honest at runtime.
+ */
+export function normalizeEmployee(raw: unknown): EmployeeFormData {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const s = (v: unknown) => String(v ?? "").trim();
-  const salaryRaw = s(raw.salary);
+  const salaryRaw = s(r.salary);
   return {
-    employeeCode: s(raw.employeeCode).toUpperCase(),
-    firstName: s(raw.firstName),
-    lastName: s(raw.lastName),
-    email: s(raw.email).toLowerCase(),
-    phone: s(raw.phone),
-    department: s(raw.department),
-    jobTitle: s(raw.jobTitle),
-    role: raw.role,
-    status: raw.status,
-    hireDate: s(raw.hireDate),
+    employeeCode: s(r.employeeCode).toUpperCase(),
+    firstName: s(r.firstName),
+    lastName: s(r.lastName),
+    email: s(r.email).toLowerCase(),
+    phone: s(r.phone),
+    department: s(r.department),
+    jobTitle: s(r.jobTitle),
+    role: s(r.role) as EmployeeRole,
+    status: s(r.status) as EmployeeStatus,
+    hireDate: s(r.hireDate),
     // `Number("")` is 0 — a silent "valid" salary. Blank must be invalid.
     salary: salaryRaw === "" ? NaN : Number(salaryRaw),
   };
@@ -45,6 +57,11 @@ export function validateEmployeeFields(e: EmployeeFormData): string | null {
   return null;
 }
 
+/**
+ * @deprecated Superseded by `employeeCodeExists` / `employeeEmailExists` in
+ * `lib/server/db.ts`, which query the DB directly (single indexed lookup)
+ * instead of fetching the whole list. Kept so no external import breaks.
+ */
 export function findDuplicate(
   e: EmployeeFormData, list: Employee[], selfId?: string,
 ): string | null {

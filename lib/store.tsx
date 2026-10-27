@@ -8,7 +8,7 @@ import type {
   Product, Role, Settings, TxType, Transaction,
 } from "./types";
 import { buildSeed } from "./seed";
-import { nextRef, uid } from "./utils";
+import { dayKey, nextRef, uid } from "./utils";
 import { api, type ProductUpdate } from "./api";
 
 const KEY = "inventory-db-v1";
@@ -75,14 +75,40 @@ function useStoreMaybe(): StoreMaybe {
 }
 
 export function RequireDb({ children }: { children: React.ReactNode }) {
-  const { db } = useStoreMaybe();
+  const { db, lastError } = useStoreMaybe();
+
   if (!db) {
+    if (lastError) {
+      return (
+        <div className="grid min-h-screen place-items-center p-6 text-center">
+          <div className="max-w-md space-y-2">
+            <p className="text-sm font-semibold text-red-600">{lastError}</p>
+            <p className="text-xs text-slate-500">
+              If you believe this is a mistake, ask an admin to provision your account.
+            </p>
+          </div>
+        </div>
+      );
+    }
     return <div className="grid min-h-screen place-items-center text-slate-500">Loading…</div>;
   }
   return <>{children}</>;
 }
 
-const ADMIN_ONLY_MSG = "You do not have permission for this action.";
+const NO_PERMISSION = "You do not have permission for this action.";
+
+/**
+ * An "active admin" is exactly what the server's last-admin guard checks:
+ * `role = 'admin' AND is_active = true`. Counting inactive admins here
+ * would make the client optimistically allow an operation the server will
+ * reject — and, worse, allow demoting the only *active* admin because an
+ * inactive one exists.
+ */
+const isActiveAdmin = (u: AppUser): boolean =>
+  u.role === "Admin" && u.isActive !== false;
+
+const activeAdminCount = (users: AppUser[]): number =>
+  users.filter(isActiveAdmin).length;
 
 export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [db, setDbState] = useState<DB | null>(null);
@@ -95,21 +121,36 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     (async () => {
       const res = await api.loadDb();
       if (cancelled) return;
-      let initial: DB;
+
       if (res.ok) {
-        initial = normalize(res.data);
-      } else {
-        let cached: DB | null = null;
-        try {
-          const raw = localStorage.getItem(KEY);
-          cached = raw ? normalize(JSON.parse(raw) as DB) : null;
-        } catch { cached = null; }
-        // Never replaceDb() here — a failed load must not wipe the server.
-        console.warn("Could not load DB from server:", res.error);
-        initial = cached ?? buildSeed();
+        ref.current = normalize(res.data);
+        setDbState(ref.current);
+        return;
       }
-      ref.current = initial;
-      setDbState(initial);
+
+      // 401/403 → the server refused us. Do **not** fall back to seed
+      // (that's how phantom-Admin happened). Show a permanent error state.
+      const isAuthFailure = /unauthori[sz]ed|forbidden|not set up/i.test(res.error);
+      if (isAuthFailure) {
+        console.warn("Auth failure loading DB:", res.error);
+        setDbState(null);
+        setLastError(
+          /not set up/i.test(res.error)
+            ? "Your account is not set up. Ask an admin to grant access."
+            : "You are signed out. Please sign in again.",
+        );
+        return;
+      }
+
+      // Network / 5xx → offline-friendly fallback (cache, then seed).
+      let cached: DB | null = null;
+      try {
+        const raw = localStorage.getItem(KEY);
+        cached = raw ? normalize(JSON.parse(raw) as DB) : null;
+      } catch { cached = null; }
+      console.warn("Could not load DB from server:", res.error);
+      ref.current = cached ?? buildSeed();
+      setDbState(ref.current);
     })();
     return () => { cancelled = true; };
   }, []);
@@ -135,7 +176,6 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const clearError = useCallback(() => setLastError(null), []);
 
-  /** Record error + resync the local snapshot from the server. */
   const handleFailure = useCallback((error: string) => {
     setLastError(error);
     void resync();
@@ -155,7 +195,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
     /* ── Categories ──────────────────────────────────────────────── */
     addCategory: (c) => {
-      if (!canCurrent("categories")) return { ok: false, error: ADMIN_ONLY_MSG };
+      if (!canCurrent("categories")) return { ok: false, error: NO_PERMISSION };
       const cur = ref.current!;
       if (cur.categories.some((x) => x.name.toLowerCase() === c.name.toLowerCase())) {
         return { ok: false, error: `Category "${c.name}" already exists.` };
@@ -165,17 +205,16 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       patch((d) => ({ ...d, categories: [...d.categories, optimistic] }));
       void api.createCategory(c).then((r) => {
         if (!r.ok) return handleFailure(r.error);
-        const real = r.data;
         patch((d) => ({
           ...d,
-          categories: d.categories.map((x) => (x.id === tempId ? real : x)),
+          categories: d.categories.map((x) => (x.id === tempId ? r.data : x)),
         }));
       });
       return { ok: true };
     },
 
     updateCategory: (c) => {
-      if (!canCurrent("categories")) { setLastError(ADMIN_ONLY_MSG); return; }
+      if (!canCurrent("categories")) { setLastError(NO_PERMISSION); return; }
       patch((d) => ({
         ...d,
         categories: d.categories.map((x) => (x.id === c.id ? c : x)),
@@ -190,7 +229,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     },
 
     deleteCategory: (id) => {
-      if (!canCurrent("categories")) return { ok: false, error: ADMIN_ONLY_MSG };
+      if (!canCurrent("categories")) return { ok: false, error: NO_PERMISSION };
       const cur = ref.current!;
       if (cur.products.some((p) => p.categoryId === id)) {
         return { ok: false, error: "This category still has products. Move or delete them first." };
@@ -202,7 +241,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
     /* ── Products ────────────────────────────────────────────────── */
     addProduct: (p) => {
-      if (!canCurrent("products")) return { ok: false, error: ADMIN_ONLY_MSG };
+      if (!canCurrent("products")) return { ok: false, error: NO_PERMISSION };
       const cur = ref.current!;
       if (cur.products.some((x) => x.sku.toLowerCase() === p.sku.toLowerCase())) {
         return { ok: false, error: `SKU "${p.sku}" already exists.` };
@@ -212,20 +251,19 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       patch((d) => ({ ...d, products: [optimistic, ...d.products] }));
       void api.createProduct(p).then((r) => {
         if (!r.ok) return handleFailure(r.error);
-        const real = r.data;
         patch((d) => ({
           ...d,
-          products: d.products.map((x) => (x.id === tempId ? real : x)),
+          products: d.products.map((x) => (x.id === tempId ? r.data : x)),
         }));
       });
       return { ok: true };
     },
 
     updateProduct: (p) => {
-      if (!canCurrent("products")) { setLastError(ADMIN_ONLY_MSG); return; }
+      if (!canCurrent("products")) { setLastError(NO_PERMISSION); return; }
       const cur = ref.current!;
       const existing = cur.products.find((x) => x.id === p.id);
-      // Stock is owned by the server; never trust the client value here.
+      // Preserve `stock` — it's owned by the RPC, never the client.
       const merged: Product = existing ? { ...p, stock: existing.stock } : p;
 
       patch((d) => ({
@@ -238,6 +276,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         categoryId: merged.categoryId, unit: merged.unit,
         cost: merged.cost, price: merged.price,
         threshold: merged.threshold, image: merged.image,
+        // `isActive` is optional; forward it when the caller supplies it.
+        ...(merged.isActive !== undefined ? { isActive: merged.isActive } : {}),
       };
       void api.updateProduct(payload).then((r) => {
         if (!r.ok) return handleFailure(r.error);
@@ -249,7 +289,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     },
 
     deleteProduct: (id) => {
-      if (!canCurrent("products")) return { ok: false, error: ADMIN_ONLY_MSG };
+      if (!canCurrent("products")) return { ok: false, error: NO_PERMISSION };
       const cur = ref.current!;
       if (cur.transactions.some((t) => t.productId === id)) {
         return {
@@ -265,7 +305,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     /* ── Stock movement ──────────────────────────────────────────── */
     move: (type, i) => {
       const perm: Feature = type === "IN" ? "stockIn" : "stockOut";
-      if (!canCurrent(perm)) return { ok: false, error: ADMIN_ONLY_MSG };
+      if (!canCurrent(perm)) return { ok: false, error: NO_PERMISSION };
 
       const cur = ref.current!;
       const p = cur.products.find((x) => x.id === i.productId);
@@ -280,7 +320,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         };
       }
 
-      const date = i.date ?? new Date().toISOString();
+      // `transactions.date` is a `date` column. Sending a full ISO timestamp
+      // routes the insert through the session timezone and can shift the
+      // stored day for users west of UTC. Always default to a local
+      // YYYY-MM-DD here.
+      const date = i.date ?? dayKey(new Date());
       const tempId = uid();
       const optimistic: Transaction = {
         id: tempId,
@@ -310,10 +354,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         unitPrice: i.unitPrice, party: i.party, note: i.note, date,
       }).then((r) => {
         if (!r.ok) return handleFailure(r.error);
-        const real = r.data;
         patch((d) => ({
           ...d,
-          transactions: d.transactions.map((t) => (t.id === tempId ? real : t)),
+          transactions: d.transactions.map((t) => (t.id === tempId ? r.data : t)),
         }));
       });
       return { ok: true };
@@ -321,7 +364,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
     deleteTransaction: (id) => {
       if (!canCurrent("stockIn") && !canCurrent("stockOut")) {
-        return { ok: false, error: ADMIN_ONLY_MSG };
+        return { ok: false, error: NO_PERMISSION };
       }
       const cur = ref.current!;
       const tx = cur.transactions.find((t) => t.id === id);
@@ -349,9 +392,6 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         patch((d) => ({ ...d, transactions: d.transactions.filter((t) => t.id !== id) }));
       }
 
-      // The server reverses stock unconditionally via `delete_transaction`
-      // (or via a trigger). Resync on success so the local stock snapshot
-      // never drifts — including when the product lookup above missed.
       void api.deleteTransaction(id).then((r) => {
         if (!r.ok) return handleFailure(r.error);
         void resync();
@@ -360,15 +400,31 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     },
 
     /* ── Settings ────────────────────────────────────────────────── */
+    /**
+     * `currentRole` is per-user display state ("preview as role"). It is
+     * applied locally only — the server rejects it on `/api/settings`
+     * because it would be an authz bypass if it were global.
+     */
     updateSettings: (s) => {
-      if (!canCurrent("settings")) { setLastError(ADMIN_ONLY_MSG); return; }
-      const cur = ref.current!;
-      patch((d) => ({ ...d, settings: { ...cur.settings, ...s } }));
-      void api.patchSettings(s).then((r) => { if (!r.ok) handleFailure(r.error); });
+      if (!canCurrent("settings")) { setLastError(NO_PERMISSION); return; }
+      const { currentRole, ...rest } = s;
+
+      if (currentRole) {
+        patch((d) => ({ ...d, settings: { ...d.settings, currentRole } }));
+      }
+      if (Object.keys(rest).length > 0) {
+        // Merge against `d.settings` (the fresh state inside the patch),
+        // not a captured `ref.current`. Otherwise a concurrent patch that
+        // lands between capture and callback is clobbered.
+        patch((d) => ({ ...d, settings: { ...d.settings, ...rest } }));
+        void api.patchSettings(rest).then((r) => {
+          if (!r.ok) handleFailure(r.error);
+        });
+      }
     },
 
     setPermission: (r, f, v) => {
-      if (!canCurrent("settings")) { setLastError(ADMIN_ONLY_MSG); return; }
+      if (!canCurrent("settings")) { setLastError(NO_PERMISSION); return; }
       patch((d) => ({
         ...d,
         settings: {
@@ -385,7 +441,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
     /* ── Users ───────────────────────────────────────────────────── */
     addUser: (u) => {
-      if (!canCurrent("settings")) return { ok: false, error: ADMIN_ONLY_MSG };
+      if (!canCurrent("settings")) return { ok: false, error: NO_PERMISSION };
       const cur = ref.current!;
       if (cur.settings.users.some((x) => x.email.toLowerCase() === u.email.toLowerCase())) {
         return { ok: false, error: `Email "${u.email}" is already registered.` };
@@ -398,12 +454,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       }));
       void api.createUser(u).then((r) => {
         if (!r.ok) return handleFailure(r.error);
-        const real = r.data;
         patch((d) => ({
           ...d,
           settings: {
             ...d.settings,
-            users: d.settings.users.map((x) => (x.id === tempId ? real : x)),
+            users: d.settings.users.map((x) => (x.id === tempId ? r.data : x)),
           },
         }));
       });
@@ -411,15 +466,20 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     },
 
     updateUser: (u) => {
-      if (!canCurrent("settings")) { setLastError(ADMIN_ONLY_MSG); return; }
-      // Guard: don't let the last Admin lose their role.
+      if (!canCurrent("settings")) { setLastError(NO_PERMISSION); return; }
       const cur = ref.current!;
       const before = cur.settings.users.find((x) => x.id === u.id);
-      const adminCount = cur.settings.users.filter((x) => x.role === "Admin").length;
-      if (before?.role === "Admin" && u.role !== "Admin" && adminCount <= 1) {
-        setLastError("Cannot demote the last Admin.");
+
+      // Mirror the server's last-admin guard: only count ACTIVE admins, and
+      // catch both demotions (role change) and deactivations (isActive=false).
+      // An inactive admin does not protect against losing the last active one.
+      const wasActiveAdmin = before ? isActiveAdmin(before) : false;
+      const willBeActiveAdmin = isActiveAdmin(u);
+      if (wasActiveAdmin && !willBeActiveAdmin && activeAdminCount(cur.settings.users) <= 1) {
+        setLastError("Cannot demote the last active Admin.");
         return;
       }
+
       patch((d) => ({
         ...d,
         settings: {
@@ -440,16 +500,16 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     },
 
     removeUser: (id) => {
-      if (!canCurrent("settings")) { setLastError(ADMIN_ONLY_MSG); return; }
+      if (!canCurrent("settings")) { setLastError(NO_PERMISSION); return; }
       const cur = ref.current!;
       const target = cur.settings.users.find((u) => u.id === id);
-      if (
-        target?.role === "Admin" &&
-        cur.settings.users.filter((u) => u.role === "Admin").length <= 1
-      ) {
-        setLastError("Cannot remove the last Admin.");
+
+      const wasActiveAdmin = target ? isActiveAdmin(target) : false;
+      if (wasActiveAdmin && activeAdminCount(cur.settings.users) <= 1) {
+        setLastError("Cannot remove the last active Admin.");
         return;
       }
+
       patch((d) => ({
         ...d,
         settings: {
@@ -462,14 +522,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
     /* ── Employees ───────────────────────────────────────────────── */
     addEmployee: async (e) => {
-      if (!canCurrent("employees")) return { ok: false, error: ADMIN_ONLY_MSG };
+      if (!canCurrent("employees")) return { ok: false, error: NO_PERMISSION };
       const r = await api.createEmployee(e);
       if (!r.ok) return { ok: false, error: r.error };
       patch((d) => ({ ...d, employees: [r.data, ...d.employees] }));
       return { ok: true };
     },
     updateEmployee: async (e) => {
-      if (!canCurrent("employees")) return { ok: false, error: ADMIN_ONLY_MSG };
+      if (!canCurrent("employees")) return { ok: false, error: NO_PERMISSION };
       const r = await api.updateEmployee(e);
       if (!r.ok) return { ok: false, error: r.error };
       patch((d) => ({
@@ -479,7 +539,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       return { ok: true };
     },
     deleteEmployee: async (id) => {
-      if (!canCurrent("employees")) return { ok: false, error: ADMIN_ONLY_MSG };
+      if (!canCurrent("employees")) return { ok: false, error: NO_PERMISSION };
       const r = await api.deleteEmployee(id);
       if (!r.ok) return { ok: false, error: r.error };
       patch((d) => ({ ...d, employees: d.employees.filter((x) => x.id !== id) }));
@@ -488,7 +548,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
     /* ── Reset ───────────────────────────────────────────────────── */
     resetData: () => {
-      if (!canCurrent("settings")) { setLastError(ADMIN_ONLY_MSG); return; }
+      if (!canCurrent("settings")) { setLastError(NO_PERMISSION); return; }
       const seed = buildSeed();
       commit(seed);
       void api.replaceDb(seed).then((r) => { if (!r.ok) handleFailure(r.error); });

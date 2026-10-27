@@ -5,7 +5,14 @@ import type {
 
 export type ApiResult<T> = { ok: true; data: T } | { ok: false; error: string };
 
-export type ProductUpdate = Omit<Product, "stock" | "createdAt">;
+/**
+ * Fields a client may send to `PUT /api/products/:id`.
+ *  - `stock`   → RPC-owned (`move_stock` / `delete_transaction`).
+ *  - `createdAt` / `updatedAt` → server-managed; a client-supplied value
+ *    would be silently overwritten, so the type rejects it.
+ *  - `isActive` is optional so callers that don't archive still type-check.
+ */
+export type ProductUpdate = Omit<Product, "stock" | "createdAt" | "updatedAt">;
 
 async function call<T>(url: string, init?: RequestInit): Promise<ApiResult<T>> {
   const headers: HeadersInit = {

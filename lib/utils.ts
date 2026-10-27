@@ -52,11 +52,25 @@ export const pctChange = (cur: number, prev: number) =>
 export const stockStatus = (p: Product): "out" | "low" | "ok" =>
   p.stock <= 0 ? "out" : p.stock <= p.threshold ? "low" : "ok";
 
-/** Client-side best-effort ref. Server regenerates on POST /api/transactions. */
+/**
+ * Client-side best-effort ref. Server regenerates on POST /api/transactions
+ * (the `move_stock` RPC owns the authoritative sequence), so this value is
+ * only visible in the optimistic row for a fraction of a second.
+ *
+ * Computed from the **maximum existing number** for this (type, year) — not
+ * from `filter(...).length`. Counting would reuse a number after a delete:
+ * `[SI-2024-001, SI-2024-002]` → delete `001` → next would be `002`, which
+ * already exists.
+ */
 export function nextRef(type: TxType, tx: Transaction[], date: string) {
   const y = parseLocal(date).getFullYear();
-  const n =
-    tx.filter((t) => t.type === type && parseLocal(t.date).getFullYear() === y)
-      .length + 1;
-  return `${type === "IN" ? "SI" : "SO"}-${y}-${pad(n, 3)}`;
+  const prefix = `${type === "IN" ? "SI" : "SO"}-${y}-`;
+
+  let max = 0;
+  for (const t of tx) {
+    if (!t.ref.startsWith(prefix)) continue;
+    const n = Number(t.ref.slice(prefix.length));
+    if (Number.isFinite(n) && n > max) max = n;
+  }
+  return `${prefix}${pad(max + 1, 3)}`;
 }
